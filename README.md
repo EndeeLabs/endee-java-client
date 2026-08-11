@@ -1,17 +1,16 @@
 # Endee - Java Vector Database Client
 
-Endee is a Java client for the Endee vector database, designed for maximum speed and efficiency. This package provides type-safe operations, modern Java features, and optimized code for rapid Approximate Nearest Neighbor (ANN) searches on vector data.
+Java client for the [Endee](https://endee.io) vector database. Supports multi-field collections (dense, sparse, multi-vector), filtered search, client-side RRF reranking, backups, and admin operations.
 
 ## Key Features
 
-- **Type Safe**: Full compile-time type checking with builder patterns
-- **Fast ANN Searches**: Efficient similarity searches on vector data
-- **Multiple Distance Metrics**: Cosine, L2, and inner product
-- **Hybrid Indexes**: Dense + sparse (BM25 or default) vector search
-- **Metadata & Filters**: Attach and query metadata with flexible filter operators
-- **Typed Exceptions**: Specific exception types per HTTP error code
-- **High Performance**: HTTP/2, MessagePack serialization, and DEFLATE compression
-- **Modern Java**: Java 17+, uses modern APIs
+- **Multi-field collections** — combine dense, sparse, and multi-vector fields in one collection
+- **Client-side RRF reranking** — fuse results from multiple fields with weighted Reciprocal Rank Fusion
+- **Flexible filters** — `$eq`, `$in`, `$range`, `$gt`, `$gte`, `$lt`, `$lte`
+- **High performance** — HTTP/2, MessagePack wire format, DEFLATE-compressed metadata
+- **Typed exceptions** — specific exception types for each HTTP error code
+- **Admin & backup** — database CRUD, token management, backup/restore/download/upload
+- **Java 17+** — modern APIs, builder patterns, compile-time type safety
 
 ## Requirements
 
@@ -26,353 +25,526 @@ Endee is a Java client for the Endee vector database, designed for maximum speed
 <dependency>
     <groupId>io.endee</groupId>
     <artifactId>endee-java-client</artifactId>
-    <version>1.0.0</version>
+    <version>2.0.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'io.endee:endee-java-client:1.0.0'
+implementation 'io.endee:endee-java-client:2.0.0'
 ```
 
-## Quick Start
+---
 
-### Initialize the Client
+## Initialize the Client
 
 ```java
 import io.endee.client.Endee;
-import io.endee.client.Index;
+import io.endee.client.Collection;
 import io.endee.client.types.*;
 
-// Local server (defaults to http://127.0.0.1:8080/api/v1)
+// Local server (defaults to http://127.0.0.1:8080/api/v2)
 Endee client = new Endee();
 
 // With an auth token
-Endee client = new Endee("account:password");
+Endee client = new Endee("db_name:secret");
 
-// With a region (connects to https://{region}.endee.io/api/v1)
-Endee client = new Endee("account:password:us-east-1");
+// With a region (connects to https://{region}.endee.io/api/v2)
+Endee client = new Endee("db_name:secret:us-east-1");
 
 // Custom base URL
-client.setBaseUrl("http://0.0.0.0:8081/api/v1");
+client.setBaseUrl("http://0.0.0.0:8081/api/v2");
 ```
 
 ---
 
-## Index Management
+## Collection Management
 
-### Create a Dense Index
+### Create a Collection
+
+Collections hold one or more typed fields. Each field is either `vector` (dense), `sparse`, or `multi_vector`.
 
 ```java
-CreateIndexOptions options = CreateIndexOptions.builder("my_vectors", 384)
-    .spaceType(SpaceType.COSINE)
-    .precision(Precision.INT8)
-    .m(16)
-    .efCon(128)
-    .build();
-
-client.createIndex(options);
+// Dense + sparse hybrid collection
+Map<String, Object> result = client.createCollection("my_docs", List.of(
+    Map.of(
+        "name", "embedding",
+        "type", "vector",
+        "params", Map.of(
+            "dimension", 768,
+            "space_type", "cosine",   // "cosine", "l2", or "ip"
+            "precision", "int8",      // "binary", "int8", "int8e", "int16", "float16", "float32"
+            "M", 16,                  // HNSW connectivity
+            "ef_con", 128             // HNSW construction quality
+        )
+    ),
+    Map.of(
+        "name", "keywords",
+        "type", "sparse",
+        "sparse_model", "default"     // "default" or "endee_bm25"
+    )
+));
+// Output: {message=collection created}
 ```
 
-**Parameters:**
+**Field types:**
 
-| Parameter   | Description                                                           | Default  | Constraints          |
-|-------------|-----------------------------------------------------------------------|----------|----------------------|
-| `name`      | Unique index name (alphanumeric + underscore)                         | required | max 48 chars         |
-| `dimension` | Vector dimensionality (must match your embedding model)               | required | 2 – 8,000            |
-| `spaceType` | Distance metric — `COSINE`, `L2`, `IP`                               | `COSINE` | —                    |
-| `m`         | HNSW graph connectivity — higher = better recall, more memory         | `16`     | > 0                  |
-| `efCon`     | HNSW construction quality — higher = better index, slower build       | `128`    | > 0                  |
-| `precision` | Quantization level                                                    | `INT8`   | see Precision section |
+| Type | Description | Query type |
+|------|-------------|------------|
+| `vector` | Dense embedding | `double[]` |
+| `sparse` | Sparse term weights | `SparseData(int[] indices, double[] values)` |
+| `multi_vector` | Multiple dense vectors per object | `double[][]` |
 
-### Create a Hybrid Index
-
-Hybrid indexes support both dense and sparse vectors. Set `sparseModel` to enable sparse search:
+### List, Get, Delete
 
 ```java
-// Standard sparse search
-CreateIndexOptions options = CreateIndexOptions.builder("hybrid_index", 384)
-    .spaceType(SpaceType.COSINE)
-    .precision(Precision.INT8)
-    .sparseModel("default")       // or "endee_bm25" for BM25 scoring
-    .build();
+// List all collections
+List<Map<String, Object>> collections = client.listCollections();
+// Output: [{name=my_docs, fields=[...], count=1000}, ...]
 
-client.createIndex(options);
-```
+// Get a collection reference (for upsert, search, etc.)
+Collection collection = client.getCollection("my_docs");
 
-**`sparseModel` values:**
+// Describe a collection (refreshes metadata from server)
+Map<String, Object> desc = collection.describe();
+// Output: {name=my_docs, fields=[{name=embedding, type=vector, params={...}}, ...], count=1000}
 
-| Value          | Description                                     |
-|----------------|-------------------------------------------------|
-| `"default"`    | Standard sparse search without server-side IDF  |
-| `"endee_bm25"` | BM25 scoring with server-side IDF               |
-| `null`         | Dense-only index (omit `sparseModel` entirely)  |
-
-### List, Get, and Delete Indexes
-
-```java
-// List all indexes (returns raw JSON string)
-String indexes = client.listIndexes();
-
-// Get a reference to an existing index
-Index index = client.getIndex("my_vectors");
-
-// Delete an index (irreversible)
-client.deleteIndex("my_vectors");
+// Delete a collection (irreversible)
+client.deleteCollection("my_docs");
+// Output: {message=collection deleted}
 ```
 
 ---
 
-## Upserting Vectors
+## Upserting Objects
 
-### Dense Vectors
+Use the `ObjectItem` builder to construct objects with any combination of field types.
 
 ```java
-Index index = client.getIndex("my_index");
+Collection collection = client.getCollection("my_docs");
 
-List<VectorItem> vectors = List.of(
-    VectorItem.builder("vec1", new double[] {0.1, 0.2, 0.3 /* ... */})
-        .meta(Map.of("title", "First document", "score", 95))
-        .filter(Map.of("category", "tech", "group", 1))
+List<ObjectItem> objects = List.of(
+    ObjectItem.builder("doc1")
+        .vector("embedding", new double[] {0.1, 0.2, 0.3, /* ... 768 dims */})
+        .sparse("keywords", new SparseData(
+            new int[] {10, 500, 12000},       // term positions
+            new double[] {0.8, 0.5, 0.3}      // term weights
+        ))
+        .meta(Map.of("title", "First Document", "author", "Alice"))
+        .filter(Map.of("category", "tech", "year", 2024))
         .build(),
 
-    VectorItem.builder("vec2", new double[] {0.4, 0.5, 0.6 /* ... */})
-        .meta(Map.of("title", "Second document", "score", 80))
-        .filter(Map.of("category", "science", "group", 2))
+    ObjectItem.builder("doc2")
+        .vector("embedding", new double[] {0.4, 0.5, 0.6, /* ... */})
+        .sparse("keywords", new SparseData(
+            new int[] {25, 9000, 20000},
+            new double[] {0.3, 0.7, 0.1}
+        ))
+        .meta(Map.of("title", "Second Document", "author", "Bob"))
+        .filter(Map.of("category", "science", "year", 2023))
         .build()
 );
 
-index.upsert(vectors);
+Map<String, Object> result = collection.upsert(objects);
+// Output: {message=2 objects upserted}
 ```
 
-### Hybrid Vectors
+**ObjectItem fields:**
 
-For hybrid indexes, every upserted vector must supply both sparse fields:
-
-```java
-List<VectorItem> vectors = List.of(
-    VectorItem.builder("doc1", new double[] {0.1, 0.2 /* ... */})
-        .sparseIndices(new int[] {10, 50, 200})       // non-zero term positions
-        .sparseValues(new double[] {0.8, 0.5, 0.3})   // weight for each position
-        .meta(Map.of("title", "Document 1"))
-        .filter(Map.of("category", "tech"))
-        .build()
-);
-
-index.upsert(vectors);
-```
-
-**`VectorItem` fields:**
-
-| Field           | Required      | Description                                                  |
-|-----------------|---------------|--------------------------------------------------------------|
-| `id`            | Yes           | Unique non-empty string identifier                           |
-| `vector`        | Yes           | Dense embedding (length must equal index `dimension`)        |
-| `meta`          | No            | Arbitrary metadata `Map` — stored compressed, not filterable |
-| `filter`        | No            | Key-value pairs used for filtered queries                    |
-| `sparseIndices` | Hybrid only   | Non-zero term positions in the sparse vector                 |
-| `sparseValues`  | Hybrid only   | Weight for each sparse index (same length as `sparseIndices`)|
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique string identifier |
+| `.vector(fieldName, double[])` | Per field | Dense vector (length must match field dimension) |
+| `.sparse(fieldName, SparseData)` | Per field | Sparse vector (indices + values) |
+| `.multiVector(fieldName, double[][])` | Per field | Multiple dense vectors |
+| `.meta(Map)` | No | Arbitrary metadata — stored compressed, returned on search |
+| `.filter(Map)` | No | Key-value pairs for filtered queries |
 
 **Limits:**
-- 1 – 1,000 vectors per `upsert` call
+- Max 10,000 objects per `upsert` call
 - IDs must be unique within a batch
 - Vector values must be finite (no `NaN` or `Inf`)
+- Max vector dimension: 8,000
 
 ---
 
-## Querying
+## Searching
 
-### Basic Dense Query
+### Single-field Search
 
 ```java
-List<QueryResult> results = index.query(
-    QueryOptions.builder()
-        .vector(new double[] {0.15, 0.25 /* ... */})
-        .topK(5)
-        .build()
+Map<String, List<SearchHit>> results = collection.search(
+    Map.of("embedding", Map.of(
+        "query", new double[] {0.15, 0.25, 0.35, /* ... */},
+        "limit", 10                // results per field (default: 10, max: 4,096)
+    ))
 );
 
-for (QueryResult item : results) {
-    System.out.println("ID: " + item.getId());
-    System.out.println("Similarity: " + item.getSimilarity());
-    System.out.println("Distance: " + item.getDistance());  // 1 - similarity
-    System.out.println("Meta: " + item.getMeta());
-    System.out.println("Vector: " + Arrays.toString(item.getVector())); // empty unless includeVectors=true
+// Results are per-field
+for (SearchHit hit : results.get("embedding")) {
+    System.out.printf("ID: %s  Score: %.4f  Meta: %s  Filter: %s%n",
+        hit.getId(), hit.getSimilarity(), hit.getMeta(), hit.getFilter());
 }
+// Output:
+// ID: doc1  Score: 0.9823  Meta: {title=First Document, author=Alice}  Filter: {category=tech, year=2024}
+// ID: doc2  Score: 0.9156  Meta: {title=Second Document, author=Bob}  Filter: {category=science, year=2023}
 ```
 
-### Filtered Query
+### Filtered Search
 
 All filter conditions are combined with **logical AND**:
 
 ```java
-List<QueryResult> results = index.query(
-    QueryOptions.builder()
-        .vector(new double[] {0.15, 0.25 /* ... */})
-        .topK(10)
-        .filter(List.of(
-            Map.of("category", Map.of("$eq", "tech")),
-            Map.of("score",    Map.of("$range", List.of(80, 100)))
-        ))
-        .build()
+Map<String, List<SearchHit>> results = collection.search(
+    Map.of("embedding", Map.of(
+        "query", new double[] {0.15, 0.25, 0.35, /* ... */},
+        "limit", 5
+    )),
+    List.of(
+        Map.of("category", Map.of("$eq", "tech")),
+        Map.of("year", Map.of("$gte", 2023))
+    )
 );
 ```
 
 **Filter operators:**
 
-| Operator  | Description               | Example                                               |
-|-----------|---------------------------|-------------------------------------------------------|
-| `$eq`     | Exact match               | `Map.of("status", Map.of("$eq", "published"))`        |
-| `$in`     | Match any value in list   | `Map.of("tags", Map.of("$in", List.of("ai", "ml")))` |
-| `$range`  | Numeric range (inclusive) | `Map.of("score", Map.of("$range", List.of(70, 95)))`  |
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `$eq` | Exact match | `Map.of("status", Map.of("$eq", "published"))` |
+| `$in` | Match any value in list | `Map.of("tags", Map.of("$in", List.of("ai", "ml")))` |
+| `$range` | Numeric range (inclusive) | `Map.of("score", Map.of("$range", List.of(70, 95)))` |
+| `$gt` | Greater than | `Map.of("year", Map.of("$gt", 2020))` |
+| `$gte` | Greater than or equal | `Map.of("year", Map.of("$gte", 2020))` |
+| `$lt` | Less than | `Map.of("score", Map.of("$lt", 50))` |
+| `$lte` | Less than or equal | `Map.of("score", Map.of("$lte", 50))` |
 
-> `$range` supports integer values in **[0, 999]**. Normalize larger values before upserting.
+### Multi-field Search
 
-### Hybrid Query
+Search across multiple fields simultaneously:
 
 ```java
-List<QueryResult> results = index.query(
-    QueryOptions.builder()
-        .vector(new double[] {0.15, 0.25 /* ... */})      // dense component
-        .sparseIndices(new int[] {10, 100, 300})           // sparse query positions
-        .sparseValues(new double[] {0.7, 0.5, 0.4})        // sparse query weights
-        .topK(5)
-        .denseRrfWeight(0.7)    // weight for the dense component in RRF fusion (0.0–1.0)
-        .rrfRankConstant(60)    // RRF rank constant (default 60)
-        .build()
-);
+Map<String, Map<String, Object>> queryFields = new LinkedHashMap<>();
+queryFields.put("embedding", Map.of(
+    "query", new double[] {0.5, 0.5, 0.5, /* ... */},
+    "limit", 10
+));
+queryFields.put("keywords", Map.of(
+    "query", new SparseData(new int[] {42, 999}, new double[] {0.8, 0.6}),
+    "limit", 10
+));
+
+Map<String, List<SearchHit>> results = collection.search(queryFields);
+// results.get("embedding") — dense search results
+// results.get("keywords") — sparse search results
 ```
 
-You can also query with only dense (`vector`) or only sparse (`sparseIndices` + `sparseValues`).
+### Client-side RRF Reranking
 
-### All Query Options
+Fuse per-field results into a single ranked list using Reciprocal Rank Fusion:
 
 ```java
-QueryOptions.builder()
-    .vector(double[])                        // dense query vector
-    .topK(int)                               // results to return (default: 10, max: 4,096)
-    .ef(int)                                 // HNSW search depth (default: 128, max: 1,024)
-    .filter(List<Map<String, Object>>)       // filter conditions (AND-combined)
-    .includeVectors(boolean)                 // include vector data in results (default: false)
-    .sparseIndices(int[])                    // sparse query positions (hybrid only)
-    .sparseValues(double[])                  // sparse query weights (hybrid only)
-    .denseRrfWeight(double)                  // dense RRF weight 0.0–1.0 (default: 0.5)
-    .rrfRankConstant(int)                    // RRF rank constant ≥ 1 (default: 60)
-    .prefilterCardinalityThreshold(int)      // switch to postfilter above this (default: 10,000, range: 1,000–1,000,000)
-    .filterBoostPercentage(int)              // expand candidate pool toward filter matches (default: 0, range: 0–400)
-    .build()
+import io.endee.client.Reranker;
+
+// Fuse with weighted fields
+List<SearchHit> fused = Reranker.rerank(
+    results,                                     // per-field results from search()
+    10,                                          // max results to return
+    Map.of("embedding", 0.6, "keywords", 0.4),  // field weights (must sum to 1.0)
+    60                                           // RRF rank constant k
+);
+
+for (SearchHit hit : fused) {
+    System.out.printf("ID: %s  RRF Score: %.6f%n", hit.getId(), hit.getSimilarity());
+}
+// Output:
+// ID: doc1  RRF Score: 0.016393
+// ID: doc2  RRF Score: 0.013115
+// ...
+
+// Convenience: uniform weights, default limit (10) and k (60)
+List<SearchHit> fused = Reranker.rerank(results, Map.of("embedding", 0.5, "keywords", 0.5));
+```
+
+### Advanced Search Options
+
+```java
+Map<String, List<SearchHit>> results = collection.search(
+    queryFields,
+    filter,              // List<Map<String, Object>> — filter conditions (null for none)
+    128,                 // ef_search — HNSW search depth (default: 128, max: 1,024)
+    10_000,              // prefilter_cardinality_threshold (1,000–1,000,000)
+    0                    // filter_boost_percentage (0–100)
+);
 ```
 
 ---
 
-## CRUD Operations
+## Get Objects
 
-### Get a Vector by ID
+Fetch full objects by ID, including all vector data:
 
 ```java
-VectorInfo info = index.getVector("vec1");
-System.out.println("ID: "     + info.getId());
-System.out.println("Vector: " + Arrays.toString(info.getVector()));
-System.out.println("Meta: "   + info.getMeta());
-System.out.println("Filter: " + info.getFilter());
-System.out.println("Norm: "   + info.getNorm());
+List<ObjectInfo> objects = collection.getObjects(List.of("doc1", "doc2"));
 
-// For hybrid indexes, sparse fields are also populated:
-System.out.println("SparseIndices: " + Arrays.toString(info.getSparseIndices()));
-System.out.println("SparseValues: "  + Arrays.toString(info.getSparseValues()));
+for (ObjectInfo obj : objects) {
+    System.out.println("ID: " + obj.getId());
+    System.out.println("Meta: " + obj.getMeta());
+    System.out.println("Filter: " + obj.getFilter());
+    System.out.println("Dense fields: " + obj.getVectors().keySet());
+    System.out.println("Sparse fields: " + obj.getSparses().keySet());
+    System.out.println("Multi-vector fields: " + obj.getMultiVectors().keySet());
+}
+// Output:
+// ID: doc1
+// Meta: {title=First Document, author=Alice}
+// Filter: {category=tech, year=2024}
+// Dense fields: [embedding]
+// Sparse fields: [keywords]
+// Multi-vector fields: []
 ```
 
-### Update Filters
+**ObjectInfo fields:**
 
-Updates filter fields on existing vectors without re-upserting. The entire filter object is replaced:
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `String` | Object ID |
+| `meta` | `Map<String, Object>` | Metadata |
+| `filter` | `Map<String, Object>` | Filter values |
+| `vectors` | `Map<String, double[]>` | Dense vectors by field name |
+| `sparses` | `Map<String, SparseData>` | Sparse vectors by field name |
+| `multiVectors` | `Map<String, double[][]>` | Multi-vectors by field name |
+
+---
+
+## Delete Objects
 
 ```java
-index.updateFilters(List.of(
-    new UpdateFilterParams("vec1", Map.of("category", "ml", "score", 95)),
-    new UpdateFilterParams("vec2", Map.of("category", "science", "score", 80))
+// Delete by ID
+Map<String, Object> result = collection.deleteObject("doc1");
+// Output: {message=1 rows deleted}
+
+// Delete by filter
+Map<String, Object> result = collection.deleteByFilter(
+    List.of(Map.of("category", Map.of("$eq", "tech")))
+);
+// Output: {message=5 rows deleted}
+```
+
+---
+
+## Update Filters
+
+Update filter fields on existing objects without re-upserting. The entire filter object is replaced:
+
+```java
+import io.endee.client.types.UpdateFilterParams;
+
+Map<String, Object> result = collection.updateFilters(List.of(
+    new UpdateFilterParams("doc1", Map.of("category", "ml", "year", 2025)),
+    new UpdateFilterParams("doc2", Map.of("category", "physics", "year", 2024))
 ));
-```
-
-### Delete by ID
-
-```java
-String result = index.deleteVector("vec1");
-// returns e.g. "1 rows deleted"
-```
-
-### Delete by Filter
-
-```java
-index.deleteWithFilter(List.of(
-    Map.of("category", Map.of("$eq", "tech"))
-));
+// Output: {message=2 filters updated}
 ```
 
 ---
 
 ## Index Maintenance
 
-### Describe Index
+### Rebuild
 
-Returns stored metadata without a network call:
+Rebuilds HNSW graphs with new parameters. Runs asynchronously — poll `rebuildStatus()` until complete:
 
 ```java
-IndexDescription desc = index.describe();
-System.out.println(desc);
-// {name='my_index', spaceType=COSINE, dimension=384, precision=INT8,
-//  count=1000, isHybrid=true, sparseModel='default', M=16, efCon=128}
+// Trigger rebuild
+Map<String, Object> result = collection.rebuild(
+    List.of(Map.of("field", "embedding", "M", 20, "ef_con", 200))
+);
+// Output: {message=rebuild started}
+
+// Poll until complete
+while (true) {
+    Map<String, Object> status = collection.rebuildStatus();
+    System.out.println(status);
+    // Output: {status=in_progress, vectors_processed=500, total_vectors=1000, percent_complete=50}
+    if ("completed".equals(status.get("status"))) break;
+    Thread.sleep(2000);
+}
 ```
 
-### Refresh Metadata
+### Shrink
 
-Fetches the latest metadata from the server and updates the local Index object:
+Defragments the collection's storage after deletions:
 
 ```java
-Map<String, Object> meta = index.refreshMetadata();
-// returns: {count, space_type, dimension, precision, M, ef_con, sparse_model, is_hybrid}
+Map<String, Object> result = collection.shrink();
+// Output: {message=shrink complete}
 ```
 
-### Rebuild Index
+---
 
-Rebuilds the HNSW graph with new parameters. Useful after bulk inserts or to tune recall:
+## Backups
+
+### Collection-level Backup
 
 ```java
-Map<String, Object> result = index.rebuild(16, 200);
-// result: {status, previous_config, new_config, total_vectors}
+// Create a backup (async — poll activeBackup() until done)
+Map<String, Object> result = collection.createBackup("my_backup");
+// Output: {message=backup started}
+
+// Poll until complete
+while (true) {
+    Map<String, Object> active = client.activeBackup();
+    if (!Boolean.TRUE.equals(active.get("active"))) break;
+    Thread.sleep(2000);
+}
 ```
 
-> `rebuild()` first calls `refreshMetadata()` to verify the index is non-empty, then sends a `POST /rebuild` request. The server responds `202 Accepted` while the rebuild runs asynchronously.
-
-### Rebuild Status
-
-Poll the rebuild progress:
+### Backup Management
 
 ```java
-Map<String, Object> status = index.rebuildStatus();
-// status: {status: "in_progress"|"completed"|"failed"|"idle",
-//          vectors_processed, total_vectors, percent_complete}
+// List all backups
+Object backups = client.listBackups();
+
+// Get backup info
+Map<String, Object> info = client.backupInfo("my_backup");
+
+// Active backup status
+Map<String, Object> active = client.activeBackup();
+
+// Restore a backup into a new collection
+Map<String, Object> result = client.restoreBackup("my_backup", "restored_collection");
+
+// Delete a backup
+client.deleteBackup("my_backup");
+```
+
+### Download & Upload Backups
+
+```java
+// Download a backup as a .tar file
+String path = client.downloadBackup("my_backup", "/tmp/my_backup.tar");
+// Output: "/tmp/my_backup.tar"
+
+// Download with db_name (for root-token multi-database targeting)
+client.downloadBackup("my_backup", "/tmp/my_backup.tar", "my_database");
+
+// Upload a .tar backup file
+Map<String, Object> result = client.uploadBackup("/tmp/my_backup.tar");
+// Output: {message=backup uploaded}
+```
+
+---
+
+## Server Info
+
+```java
+// Health check
+Map<String, Object> health = client.health();
+// Output: {status=ok, timestamp=1234567890}
+
+// Server stats
+Map<String, Object> stats = client.stats();
+// Output: {version=2.0.0, uptime=3600, total_requests=15000}
+```
+
+---
+
+## Admin Features
+
+Admin operations require a root token.
+
+### Database Management
+
+```java
+Endee admin = new Endee("root_token");
+
+// Create a database (returns the new db token)
+String dbToken = admin.createDatabase("my_db", "enterprise");
+// db_type options: "starter", "pro", "scale", "enterprise"
+
+// List all databases
+List<Map<String, Object>> dbs = admin.listDatabases();
+
+// Get database info
+Map<String, Object> info = admin.getDatabase("my_db");
+
+// Activate / deactivate
+admin.activateDatabase("my_db");
+admin.deactivateDatabase("my_db");
+
+// Change database tier
+admin.setDatabaseType("my_db", "pro");
+
+// Delete a database
+admin.deleteDatabase("my_db");
+```
+
+### Admin Collection Views
+
+```java
+// List collections in a specific database
+List<Map<String, Object>> cols = admin.listDbCollections("my_db");
+
+// List all collections across all databases
+List<Map<String, Object>> allCols = admin.listAllCollections();
+
+// Delete a collection in a specific database
+admin.deleteDbCollection("my_db", "my_collection");
+```
+
+### Token Management (Admin)
+
+```java
+// Create a token for a database
+String token = admin.createToken("my_db", "analytics_token", "r");
+// token_type: "rw" (read-write) or "r" (read-only)
+
+// List tokens
+List<Map<String, Object>> tokens = admin.listTokens("my_db");
+
+// Delete a token
+admin.deleteToken("my_db", "analytics_token");
+```
+
+### Self-service Token Management
+
+Available to any authenticated user for their own database:
+
+```java
+Endee client = new Endee("my_db:my_secret");
+
+// Create a token
+String token = client.createMyToken("my_token", "rw");
+
+// List my tokens
+List<Map<String, Object>> tokens = client.listMyTokens();
+
+// Delete a token
+client.deleteMyToken("my_token");
 ```
 
 ---
 
 ## Precision Options
 
-| Value       | Wire     | Use Case                                                         |
-|-------------|----------|------------------------------------------------------------------|
-| `BINARY`    | `binary` | Maximum compression — 1 bit/dim, fastest search                 |
-| `INT8`      | `int8`   | Default — best balance of accuracy and performance               |
-| `INT16`     | `int16`  | Higher accuracy than INT8                                        |
-| `FLOAT16`   | `float16`| Good compromise for embeddings                                   |
-| `FLOAT32`   | `float32`| Maximum precision                                                |
+| Value | Wire | Description |
+|-------|------|-------------|
+| `binary` | `binary` | 1 bit/dim — maximum compression, fastest search |
+| `int8` | `int8` | Default — best balance of accuracy and performance |
+| `int8e` | `int8e` | Enhanced INT8 with error correction |
+| `int16` | `int16` | Higher accuracy than INT8 |
+| `float16` | `float16` | Good compromise for embeddings |
+| `float32` | `float32` | Maximum precision |
 
 ## Space Types
 
-| Value    | Wire     | Best For                               |
-|----------|----------|----------------------------------------|
-| `COSINE` | `cosine` | Normalized embeddings (default)        |
-| `L2`     | `l2`     | Spatial / Euclidean distance           |
-| `IP`     | `ip`     | Unnormalized embeddings (dot product)  |
+| Value | Wire | Best For |
+|-------|------|----------|
+| `cosine` | `cosine` | Normalized embeddings (default) |
+| `l2` | `l2` | Spatial / Euclidean distance |
+| `ip` | `ip` | Unnormalized embeddings (dot product) |
 
 ---
 
@@ -384,36 +556,36 @@ The client uses a typed exception hierarchy. All exceptions extend `EndeeExcepti
 import io.endee.client.exception.*;
 
 try {
-    index.getVector("missing_id");
+    collection.getObjects(List.of("missing_id"));
 } catch (NotFoundException e) {
+    // 404 — object or collection not found
     System.err.println("Not found: " + e.getMessage());
 } catch (AuthenticationException e) {
+    // 401 — invalid or expired token
     System.err.println("Auth failed: " + e.getMessage());
 } catch (EndeeApiException e) {
-    // catch-all for any API error — provides status code and raw body
+    // Catch-all for any API error
     System.err.println("HTTP " + e.getStatusCode() + ": " + e.getErrorBody());
 } catch (EndeeException e) {
-    // network / serialization errors
+    // Network or serialization errors
     System.err.println("Client error: " + e.getMessage());
 } catch (IllegalArgumentException e) {
-    // validation errors (invalid params, dimension mismatch, etc.)
+    // Validation errors (invalid params, dimension mismatch, etc.)
     System.err.println("Validation: " + e.getMessage());
 }
 ```
 
-**Exception hierarchy:**
+**Exception types:**
 
-| Exception                | HTTP Status | Trigger                                |
-|--------------------------|-------------|----------------------------------------|
-| `EndeeApiException`      | 400         | Bad request / validation error (base)  |
-| `AuthenticationException`| 401         | Invalid or expired token               |
-| `SubscriptionException`  | 402         | Quota exceeded / tier limit            |
-| `ForbiddenException`     | 403         | Insufficient permissions               |
-| `NotFoundException`      | 404         | Index or vector not found              |
-| `ConflictException`      | 409         | Resource already exists                |
-| `ServerException`        | 5xx         | Server busy / internal error           |
-
-All typed exceptions also extend `EndeeApiException`, so catching `EndeeApiException` handles every API error if you only need the status code.
+| Exception | HTTP Status | Trigger |
+|-----------|-------------|---------|
+| `EndeeApiException` | 400 | Bad request (base for all API errors) |
+| `AuthenticationException` | 401 | Invalid or expired token |
+| `SubscriptionException` | 402 | Quota exceeded or tier limit |
+| `ForbiddenException` | 403 | Insufficient permissions |
+| `NotFoundException` | 404 | Collection or object not found |
+| `ConflictException` | 409 | Resource already exists |
+| `ServerException` | 5xx | Server error |
 
 ---
 
@@ -421,77 +593,88 @@ All typed exceptions also extend `EndeeApiException`, so catching `EndeeApiExcep
 
 ```java
 import io.endee.client.Endee;
-import io.endee.client.Index;
-import io.endee.client.exception.*;
+import io.endee.client.Collection;
+import io.endee.client.Reranker;
 import io.endee.client.types.*;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class Example {
-    public static void main(String[] args) {
-        Endee client = new Endee();
+    public static void main(String[] args) throws Exception {
+        Endee client = new Endee("db_name:secret:region");
 
-        // 1. Create a hybrid index
-        client.createIndex(
-            CreateIndexOptions.builder("docs", 384)
-                .spaceType(SpaceType.COSINE)
-                .precision(Precision.INT8)
-                .sparseModel("default")
-                .build()
-        );
+        // 1. Create a hybrid collection
+        client.createCollection("docs", List.of(
+            Map.of("name", "embedding", "type", "vector",
+                "params", Map.of("dimension", 768, "space_type", "cosine",
+                    "precision", "int8", "M", 16, "ef_con", 128)),
+            Map.of("name", "keywords", "type", "sparse",
+                "sparse_model", "default")
+        ));
 
-        // 2. Get index reference
-        Index index = client.getIndex("docs");
-        System.out.println("isHybrid: " + index.isHybrid()); // true
+        // 2. Get collection reference
+        Collection collection = client.getCollection("docs");
 
-        // 3. Upsert vectors
-        index.upsert(List.of(
-            VectorItem.builder("doc1", new double[384])
-                .sparseIndices(new int[]  {10, 500, 1200})
-                .sparseValues( new double[]{0.8, 0.5, 0.3})
+        // 3. Upsert objects
+        collection.upsert(List.of(
+            ObjectItem.builder("doc1")
+                .vector("embedding", new double[768])
+                .sparse("keywords", new SparseData(
+                    new int[] {10, 500, 1200},
+                    new double[] {0.8, 0.5, 0.3}))
                 .meta(Map.of("title", "Hello World"))
                 .filter(Map.of("category", "tech", "score", 90))
                 .build()
         ));
 
-        // 4. Query
-        List<QueryResult> results = index.query(
-            QueryOptions.builder()
-                .vector(new double[384])
-                .sparseIndices(new int[]  {10, 500})
-                .sparseValues( new double[]{0.9, 0.4})
-                .topK(5)
-                .denseRrfWeight(0.6)
-                .filter(List.of(Map.of("category", Map.of("$eq", "tech"))))
-                .includeVectors(true)
-                .build()
+        // 4. Multi-field search
+        Map<String, Map<String, Object>> query = new LinkedHashMap<>();
+        query.put("embedding", Map.of(
+            "query", new double[768], "limit", 5));
+        query.put("keywords", Map.of(
+            "query", new SparseData(new int[] {10, 500}, new double[] {0.9, 0.4}),
+            "limit", 5));
+
+        Map<String, List<SearchHit>> results = collection.search(
+            query,
+            List.of(Map.of("category", Map.of("$eq", "tech")))
         );
 
-        for (QueryResult r : results) {
-            System.out.printf("ID: %s  Similarity: %.4f  Meta: %s%n",
-                r.getId(), r.getSimilarity(), r.getMeta());
+        // 5. Fuse results with RRF
+        List<SearchHit> fused = Reranker.rerank(results, 10,
+            Map.of("embedding", 0.6, "keywords", 0.4), 60);
+
+        for (SearchHit hit : fused) {
+            System.out.printf("ID: %s  Score: %.6f  Meta: %s%n",
+                hit.getId(), hit.getSimilarity(), hit.getMeta());
         }
 
-        // 5. Get a vector (hybrid returns sparse fields too)
-        VectorInfo info = index.getVector("doc1");
-        System.out.println("SparseIndices: " + Arrays.toString(info.getSparseIndices()));
+        // 6. Get full objects
+        List<ObjectInfo> objects = collection.getObjects(List.of("doc1"));
+        System.out.println("Vectors: " + objects.get(0).getVectors().keySet());
 
-        // 6. Update filter
-        index.updateFilters(List.of(
+        // 7. Update filters
+        collection.updateFilters(List.of(
             new UpdateFilterParams("doc1", Map.of("category", "ml", "score", 95))
         ));
 
-        // 7. Rebuild index after bulk inserts
-        Map<String, Object> rebuildResult = index.rebuild(16, 200);
-        System.out.println("Rebuild: " + rebuildResult.get("status"));
+        // 8. Rebuild and wait
+        collection.rebuild(List.of(Map.of("field", "embedding", "M", 20, "ef_con", 200)));
+        while (!"completed".equals(collection.rebuildStatus().get("status"))) {
+            Thread.sleep(2000);
+        }
 
-        // 8. Poll rebuild status
-        Map<String, Object> status = index.rebuildStatus();
-        System.out.println("Status: " + status);
+        // 9. Backup, download, restore
+        collection.createBackup("my_backup");
+        while (Boolean.TRUE.equals(client.activeBackup().get("active"))) {
+            Thread.sleep(2000);
+        }
+        client.downloadBackup("my_backup", "/tmp/my_backup.tar");
+        client.restoreBackup("my_backup", "docs_restored");
 
-        // 9. Cleanup
-        client.deleteIndex("docs");
+        // 10. Cleanup
+        client.deleteCollection("docs");
+        client.deleteCollection("docs_restored");
+        client.deleteBackup("my_backup");
     }
 }
 ```
@@ -500,118 +683,70 @@ public class Example {
 
 ## API Reference
 
-### `Endee`
+### `Endee` (Client)
 
-| Method                              | Returns  | Description                        |
-|-------------------------------------|----------|------------------------------------|
-| `Endee()`                           | —        | Connect to local server            |
-| `Endee(String token)`               | —        | Connect with auth token            |
-| `setBaseUrl(String url)`            | `String` | Override the base URL              |
-| `createIndex(CreateIndexOptions)`   | `String` | Create a new index                 |
-| `listIndexes()`                     | `String` | List all indexes (raw JSON)        |
-| `getIndex(String name)`             | `Index`  | Get an Index object                |
-| `deleteIndex(String name)`          | `String` | Delete an index                    |
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `Endee()` | — | Connect to local server |
+| `Endee(String token)` | — | Connect with auth token |
+| `setBaseUrl(String url)` | `void` | Override the base URL |
+| `setToken(String token)` | `void` | Set the auth token |
+| `createCollection(name, fields)` | `Map` | Create a new collection |
+| `listCollections()` | `List<Map>` | List all collections |
+| `getCollection(name)` | `Collection` | Get a Collection reference |
+| `deleteCollection(name)` | `Map` | Delete a collection |
+| `health()` | `Map` | Server health check |
+| `stats()` | `Map` | Server stats |
+| `listBackups()` | `Object` | List backups |
+| `backupInfo(name)` | `Map` | Get backup metadata |
+| `activeBackup()` | `Map` | Get active backup status |
+| `restoreBackup(name, target)` | `Map` | Restore backup to new collection |
+| `deleteBackup(name)` | `Map` | Delete a backup |
+| `downloadBackup(name, destPath)` | `String` | Download backup as .tar |
+| `downloadBackup(name, destPath, dbName)` | `String` | Download backup (multi-db) |
+| `uploadBackup(filePath)` | `Map` | Upload a .tar backup |
+| `createDatabase(name, type)` | `String` | Create database (admin) |
+| `listDatabases()` | `List<Map>` | List databases (admin) |
+| `getDatabase(name)` | `Map` | Get database info (admin) |
+| `deleteDatabase(name)` | `Map` | Delete database (admin) |
+| `activateDatabase(name)` | `Map` | Activate database (admin) |
+| `deactivateDatabase(name)` | `Map` | Deactivate database (admin) |
+| `setDatabaseType(name, type)` | `Map` | Change database tier (admin) |
+| `listDbCollections(dbName)` | `List<Map>` | List collections in db (admin) |
+| `listAllCollections()` | `List<Map>` | List all collections (admin) |
+| `deleteDbCollection(db, col)` | `Map` | Delete collection in db (admin) |
+| `createToken(db, name, type)` | `String` | Create db token (admin) |
+| `listTokens(db)` | `List<Map>` | List db tokens (admin) |
+| `deleteToken(db, name)` | `Map` | Delete db token (admin) |
+| `createMyToken(name, type)` | `String` | Create own token |
+| `listMyTokens()` | `List<Map>` | List own tokens |
+| `deleteMyToken(name)` | `Map` | Delete own token |
 
-### `Index`
+### `Collection`
 
-| Method                                    | Returns             | Description                              |
-|-------------------------------------------|---------------------|------------------------------------------|
-| `upsert(List<VectorItem>)`                | `String`            | Insert or update vectors                 |
-| `query(QueryOptions)`                     | `List<QueryResult>` | Similarity search                        |
-| `getVector(String id)`                    | `VectorInfo`        | Fetch a vector by ID                     |
-| `updateFilters(List<UpdateFilterParams>)` | `String`            | Update filter fields without re-upserting|
-| `deleteVector(String id)`                 | `String`            | Delete a vector by ID                    |
-| `deleteWithFilter(List<Map>)`             | `String`            | Delete vectors matching a filter         |
-| `describe()`                              | `IndexDescription`  | Return index metadata (no network call)  |
-| `refreshMetadata()`                       | `Map<String,Object>`| Fetch + update metadata from server      |
-| `rebuild(int m, int efCon)`               | `Map<String,Object>`| Trigger HNSW graph rebuild               |
-| `rebuildStatus()`                         | `Map<String,Object>`| Poll rebuild progress                    |
-| `isHybrid()`                              | `boolean`           | True when sparse_model ≠ "None"          |
-| `getLibToken()`                           | `String`            | Library token from the server            |
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `upsert(List<ObjectItem>)` | `Map` | Insert or update objects (max 10,000) |
+| `search(queryFields)` | `Map<String, List<SearchHit>>` | Search (no filter) |
+| `search(queryFields, filter)` | `Map<String, List<SearchHit>>` | Search with filter |
+| `search(queryFields, filter, efSearch, prefilterThreshold, boostPct)` | `Map<String, List<SearchHit>>` | Search with all options |
+| `getObjects(List<String> ids)` | `List<ObjectInfo>` | Fetch full objects by ID |
+| `deleteObject(String id)` | `Map` | Delete object by ID |
+| `deleteByFilter(List<Map>)` | `Map` | Delete objects matching filter |
+| `updateFilters(List<UpdateFilterParams>)` | `Map` | Update filter fields |
+| `describe()` | `Map` | Get collection metadata |
+| `rebuild(List<Map> fieldSpecs)` | `Map` | Trigger HNSW rebuild |
+| `rebuildStatus()` | `Map` | Poll rebuild progress |
+| `shrink()` | `Map` | Defragment storage |
+| `createBackup(String name)` | `Map` | Create a backup |
 
-### `CreateIndexOptions.Builder`
+### `Reranker`
 
-```java
-CreateIndexOptions.builder(String name, int dimension)
-    .spaceType(SpaceType)     // default: COSINE
-    .m(int)                   // default: 16
-    .efCon(int)               // default: 128
-    .precision(Precision)     // default: INT8
-    .sparseModel(String)      // "default" | "endee_bm25" | null (dense-only)
-    .version(Integer)         // optional API version
-    .build()
-```
-
-### `QueryOptions.Builder`
-
-```java
-QueryOptions.builder()
-    .vector(double[])                    // dense query vector
-    .topK(int)                           // default: 10, range: 1–4,096
-    .ef(int)                             // default: 128, max: 1,024
-    .filter(List<Map<String, Object>>)   // AND-combined filter conditions
-    .includeVectors(boolean)             // default: false
-    .sparseIndices(int[])                // hybrid only
-    .sparseValues(double[])              // hybrid only
-    .denseRrfWeight(double)              // default: 0.5, range: 0.0–1.0
-    .rrfRankConstant(int)                // default: 60, min: 1
-    .prefilterCardinalityThreshold(int)  // default: 10,000, range: 1,000–1,000,000
-    .filterBoostPercentage(int)          // default: 0, range: 0–400
-    .build()
-```
-
-### `VectorItem.Builder`
-
-```java
-VectorItem.builder(String id, double[] vector)
-    .meta(Map<String, Object>)     // arbitrary metadata
-    .filter(Map<String, Object>)   // filterable key-value fields
-    .sparseIndices(int[])          // hybrid only
-    .sparseValues(double[])        // hybrid only
-    .build()
-```
-
----
-
-## Data Types
-
-### `QueryResult`
-
-| Field        | Type                  | Description                                      |
-|--------------|-----------------------|--------------------------------------------------|
-| `id`         | `String`              | Vector ID                                        |
-| `similarity` | `double`              | Similarity score                                 |
-| `distance`   | `double`              | Distance (`1 - similarity`)                      |
-| `meta`       | `Map<String, Object>` | Metadata                                         |
-| `filter`     | `Map<String, Object>` | Filter values (omitted when empty)               |
-| `norm`       | `double`              | L2 norm of the original vector                   |
-| `vector`     | `double[]`            | Vector data — empty `[]` unless `includeVectors` |
-
-### `VectorInfo`
-
-| Field           | Type                  | Description                          |
-|-----------------|-----------------------|--------------------------------------|
-| `id`            | `String`              | Vector ID                            |
-| `vector`        | `double[]`            | Dense vector data                    |
-| `meta`          | `Map<String, Object>` | Metadata                             |
-| `filter`        | `Map<String, Object>` | Filter values                        |
-| `norm`          | `double`              | L2 norm                              |
-| `sparseIndices` | `int[]`               | Sparse positions (hybrid only)       |
-| `sparseValues`  | `double[]`            | Sparse weights (hybrid only)         |
-
-### `IndexDescription`
-
-| Field         | Type        | Description                              |
-|---------------|-------------|------------------------------------------|
-| `name`        | `String`    | Index name                               |
-| `spaceType`   | `SpaceType` | Distance metric                          |
-| `dimension`   | `int`       | Dense vector dimension                   |
-| `sparseModel` | `String`    | `"default"`, `"endee_bm25"`, or `"None"` |
-| `isHybrid`    | `boolean`   | True when sparse_model ≠ `"None"`        |
-| `count`       | `long`      | Number of vectors in the index           |
-| `precision`   | `Precision` | Quantization precision                   |
-| `m`           | `int`       | HNSW M parameter                         |
-| `efCon`       | `int`       | HNSW ef_construction                     |
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `rerank(results, limit, fieldWeights, rrfK)` | `List<SearchHit>` | RRF fusion with all options |
+| `rerank(results, fieldWeights)` | `List<SearchHit>` | RRF with default limit (10) and k (60) |
+| `rerank(results, limit)` | `List<SearchHit>` | RRF with uniform weights |
 
 ---
 
