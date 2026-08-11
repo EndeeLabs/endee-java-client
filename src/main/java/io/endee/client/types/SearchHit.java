@@ -11,7 +11,8 @@ public class SearchHit {
 
   public SearchHit() {}
 
-  public SearchHit(String id, double similarity, Map<String, Object> meta, Map<String, Object> filter) {
+  public SearchHit(
+      String id, double similarity, Map<String, Object> meta, Map<String, Object> filter) {
     this.id = id;
     this.similarity = similarity;
     this.meta = meta;

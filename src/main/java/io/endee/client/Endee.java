@@ -40,8 +40,7 @@ import org.slf4j.LoggerFactory;
 public class Endee {
   private static final Logger logger = LoggerFactory.getLogger(Endee.class);
   private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
-  private static final Set<String> VALID_DB_TYPES =
-      Set.of("starter", "pro", "scale", "enterprise");
+  private static final Set<String> VALID_DB_TYPES = Set.of("starter", "pro", "scale", "enterprise");
   private static final Set<String> VALID_TOKEN_TYPES = Set.of("rw", "r");
 
   private String token;
@@ -247,8 +246,7 @@ public class Endee {
   @SuppressWarnings("unchecked")
   public List<Map<String, Object>> listTokens(String dbName) {
     requireNonEmpty(dbName, "db_name");
-    Map<String, Object> result =
-        call("GET", "/admin/dbs/" + dbName + "/tokens", null, Set.of(200));
+    Map<String, Object> result = call("GET", "/admin/dbs/" + dbName + "/tokens", null, Set.of(200));
     Object t = result.get("tokens");
     return t instanceof List ? (List<Map<String, Object>>) t : List.of();
   }
@@ -350,21 +348,23 @@ public class Endee {
     requireNonEmpty(backupName, "backup_name");
     requireNonEmpty(destPath, "dest_path");
 
-    StringBuilder url = new StringBuilder(baseUrl)
-        .append("/backup/")
-        .append(backupName)
-        .append("/download?token=")
-        .append(URLEncoder.encode(token != null ? token : "", StandardCharsets.UTF_8));
+    StringBuilder url =
+        new StringBuilder(baseUrl)
+            .append("/backup/")
+            .append(backupName)
+            .append("/download?token=")
+            .append(URLEncoder.encode(token != null ? token : "", StandardCharsets.UTF_8));
     if (dbName != null && !dbName.isEmpty()) {
       url.append("&db=").append(URLEncoder.encode(dbName, StandardCharsets.UTF_8));
     }
 
     try {
-      HttpRequest request = HttpRequest.newBuilder()
-          .uri(URI.create(url.toString()))
-          .timeout(DEFAULT_TIMEOUT)
-          .GET()
-          .build();
+      HttpRequest request =
+          HttpRequest.newBuilder()
+              .uri(URI.create(url.toString()))
+              .timeout(DEFAULT_TIMEOUT)
+              .GET()
+              .build();
       HttpResponse<byte[]> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
       if (response.statusCode() != 200) {
@@ -406,11 +406,12 @@ public class Endee {
 
       byte[] multipartBody = buildMultipartBody(boundary, "backup", fileName, fileBytes);
 
-      HttpRequest.Builder builder = HttpRequest.newBuilder()
-          .uri(URI.create(baseUrl + "/backup/upload"))
-          .timeout(DEFAULT_TIMEOUT)
-          .header("Content-Type", "multipart/form-data; boundary=" + boundary)
-          .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody));
+      HttpRequest.Builder builder =
+          HttpRequest.newBuilder()
+              .uri(URI.create(baseUrl + "/backup/upload"))
+              .timeout(DEFAULT_TIMEOUT)
+              .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+              .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody));
 
       if (token != null && !token.isEmpty()) {
         builder.header("Authorization", token);
@@ -443,8 +444,14 @@ public class Endee {
     String CRLF = "\r\n";
     var baos = new java.io.ByteArrayOutputStream();
     baos.write(("--" + boundary + CRLF).getBytes(StandardCharsets.UTF_8));
-    baos.write(("Content-Disposition: form-data; name=\"" + fieldName + "\"; filename=\""
-        + fileName + "\"" + CRLF).getBytes(StandardCharsets.UTF_8));
+    baos.write(
+        ("Content-Disposition: form-data; name=\""
+                + fieldName
+                + "\"; filename=\""
+                + fileName
+                + "\""
+                + CRLF)
+            .getBytes(StandardCharsets.UTF_8));
     baos.write(("Content-Type: application/x-tar" + CRLF).getBytes(StandardCharsets.UTF_8));
     baos.write(CRLF.getBytes(StandardCharsets.UTF_8));
     baos.write(fileBytes);
@@ -484,9 +491,7 @@ public class Endee {
 
   private HttpRequest buildRequest(String method, String path, Map<String, Object> json) {
     HttpRequest.Builder builder =
-        HttpRequest.newBuilder()
-            .uri(URI.create(baseUrl + path))
-            .timeout(DEFAULT_TIMEOUT);
+        HttpRequest.newBuilder().uri(URI.create(baseUrl + path)).timeout(DEFAULT_TIMEOUT);
 
     if (token != null && !token.isEmpty()) {
       builder.header("Authorization", token);

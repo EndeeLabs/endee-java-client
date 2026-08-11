@@ -67,8 +67,7 @@ public class Collection {
     Map<String, Map<String, Object>> idx = new LinkedHashMap<>();
     for (Map<String, Object> f : fields) {
       @SuppressWarnings("unchecked")
-      Map<String, Object> params =
-          (Map<String, Object>) f.getOrDefault("params", Map.of());
+      Map<String, Object> params = (Map<String, Object>) f.getOrDefault("params", Map.of());
       Map<String, Object> entry = new HashMap<>();
       entry.put("type", f.getOrDefault("type", "vector"));
       entry.put("space_type", params.getOrDefault("space_type", "cosine"));
@@ -95,8 +94,7 @@ public class Collection {
           "Cannot upsert more than " + MAX_BATCH_SIZE + " objects at a time");
     }
 
-    List<String> ids =
-        objects.stream().map(ObjectItem::getId).collect(Collectors.toList());
+    List<String> ids = objects.stream().map(ObjectItem::getId).collect(Collectors.toList());
     ValidationUtils.validateObjectIds(ids);
 
     Map<String, Map<String, Object>> fMap = fieldMap();
@@ -125,7 +123,10 @@ public class Collection {
 
           String ftype = (String) cfg.get("type");
           String space = (String) cfg.getOrDefault("space_type", "cosine");
-          int dim = cfg.get("dimension") instanceof Number ? ((Number) cfg.get("dimension")).intValue() : 0;
+          int dim =
+              cfg.get("dimension") instanceof Number
+                  ? ((Number) cfg.get("dimension")).intValue()
+                  : 0;
 
           if ("vector".equals(ftype)) {
             double[] vec = (double[]) fdata;
@@ -151,10 +152,7 @@ public class Collection {
               validateVectorValues(vecs[i], item.getId());
               if (dim > 0 && vecs[i].length != dim) {
                 throw new IllegalArgumentException(
-                    "Field '"
-                        + fname
-                        + "': every multi_vector must have dimension "
-                        + dim);
+                    "Field '" + fname + "': every multi_vector must have dimension " + dim);
               }
               normalizedVecs[i] = normalizeDense(vecs[i], space);
               if ("cosine".equals(space)) {
@@ -187,8 +185,7 @@ public class Collection {
     byte[] payload = MessagePackUtils.packObjects(wireObjects);
 
     try {
-      HttpRequest request =
-          buildPostMsgpackRequest("/collection/" + name + "/objects", payload);
+      HttpRequest request = buildPostMsgpackRequest("/collection/" + name + "/objects", payload);
       HttpResponse<String> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -379,14 +376,12 @@ public class Collection {
 
   /** Convenience overload with defaults: efSearch=128, no filter tuning. */
   public Map<String, List<SearchHit>> search(
-      Map<String, Map<String, Object>> queryFields,
-      List<Map<String, Object>> filter) {
+      Map<String, Map<String, Object>> queryFields, List<Map<String, Object>> filter) {
     return search(queryFields, filter, 128, null, null);
   }
 
   /** Convenience overload: no filter. */
-  public Map<String, List<SearchHit>> search(
-      Map<String, Map<String, Object>> queryFields) {
+  public Map<String, List<SearchHit>> search(Map<String, Map<String, Object>> queryFields) {
     return search(queryFields, null, 128, null, null);
   }
 
@@ -460,8 +455,7 @@ public class Collection {
         if (sparsesRaw != null) {
           for (Map.Entry<String, Object[]> se : sparsesRaw.entrySet()) {
             sparses.put(
-                se.getKey(),
-                new SparseData((int[]) se.getValue()[0], (double[]) se.getValue()[1]));
+                se.getKey(), new SparseData((int[]) se.getValue()[0], (double[]) se.getValue()[1]));
           }
         }
         info.setSparses(sparses);
@@ -502,8 +496,7 @@ public class Collection {
   /** Deletes a single object by ID. */
   public Map<String, Object> deleteObject(String id) {
     try {
-      HttpRequest request =
-          buildDeleteRequest("/collection/" + name + "/objects/" + id);
+      HttpRequest request = buildDeleteRequest("/collection/" + name + "/objects/" + id);
       HttpResponse<String> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -531,8 +524,7 @@ public class Collection {
 
     try {
       String jsonBody = JsonUtils.toJson(Map.of("filter", filter));
-      HttpRequest request =
-          buildDeleteJsonRequest("/collection/" + name + "/objects", jsonBody);
+      HttpRequest request = buildDeleteJsonRequest("/collection/" + name + "/objects", jsonBody);
       HttpResponse<String> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -569,8 +561,7 @@ public class Collection {
 
     try {
       String jsonBody = JsonUtils.toJson(Map.of("updates", payload));
-      HttpRequest request =
-          buildPostJsonRequest("/collection/" + name + "/filters", jsonBody);
+      HttpRequest request = buildPostJsonRequest("/collection/" + name + "/filters", jsonBody);
       HttpResponse<String> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -685,8 +676,7 @@ public class Collection {
   /** Defragments the collection's storage in place. */
   public Map<String, Object> shrink() {
     try {
-      HttpRequest request =
-          buildPostJsonRequest("/collection/" + name + "/shrink", "{}");
+      HttpRequest request = buildPostJsonRequest("/collection/" + name + "/shrink", "{}");
       HttpResponse<String> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -713,8 +703,7 @@ public class Collection {
 
     try {
       String jsonBody = JsonUtils.toJson(Map.of("name", backupName));
-      HttpRequest request =
-          buildPostJsonRequest("/collection/" + name + "/backup", jsonBody);
+      HttpRequest request = buildPostJsonRequest("/collection/" + name + "/backup", jsonBody);
       HttpResponse<String> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -815,10 +804,7 @@ public class Collection {
 
   private HttpRequest buildDeleteRequest(String path) {
     HttpRequest.Builder builder =
-        HttpRequest.newBuilder()
-            .uri(URI.create(baseUrl + path))
-            .timeout(DEFAULT_TIMEOUT)
-            .DELETE();
+        HttpRequest.newBuilder().uri(URI.create(baseUrl + path)).timeout(DEFAULT_TIMEOUT).DELETE();
 
     if (token != null && !token.isBlank()) {
       builder.header("Authorization", token);
