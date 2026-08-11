@@ -107,8 +107,7 @@ public final class Reranker {
   }
 
   /** Convenience: rerank with uniform weights. */
-  public static List<SearchHit> rerank(
-      Map<String, List<SearchHit>> searchResults, int limit) {
+  public static List<SearchHit> rerank(Map<String, List<SearchHit>> searchResults, int limit) {
     return rerank(searchResults, limit, null, DEFAULT_RRF_K);
   }
 }

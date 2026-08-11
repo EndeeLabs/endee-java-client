@@ -7,7 +7,6 @@ import org.msgpack.core.MessageBufferPacker;
 import org.msgpack.core.MessagePack;
 import org.msgpack.core.MessageUnpacker;
 import org.msgpack.value.Value;
-import org.msgpack.value.ValueType;
 
 /**
  * MessagePack serialization utilities for the v2 wire format.
