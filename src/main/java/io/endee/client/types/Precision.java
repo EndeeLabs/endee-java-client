@@ -6,7 +6,8 @@ public enum Precision {
   INT8("int8"),
   INT16("int16"),
   FLOAT32("float32"),
-  FLOAT16("float16");
+  FLOAT16("float16"),
+  INT8E("int8e");
 
   private final String value;
 

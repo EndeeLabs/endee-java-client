@@ -1,61 +1,55 @@
 package io.endee.client;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.endee.client.exception.EndeeApiException;
 import io.endee.client.exception.EndeeException;
-import io.endee.client.types.CreateIndexOptions;
-import io.endee.client.types.IndexInfo;
-import io.endee.client.types.Precision;
-import io.endee.client.types.SpaceType;
-import io.endee.client.util.JsonUtils;
 import io.endee.client.util.ValidationUtils;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Main Endee client for Endee-DB.
+ * Main Endee client for the Endee vector database (v2 Collections API).
  *
  * <p>Example usage:
  *
  * <pre>{@code
- * Endee client = new Endee("auth-token");
+ * Endee client = new Endee("db_name:secret:region");
  *
- * // Create an index
- * CreateIndexOptions options = CreateIndexOptions.builder("my_index", 128)
- *         .spaceType(SpaceType.COSINE)
- *         .precision(Precision.INT8)
- *         .build();
- * client.createIndex(options);
+ * // Create a collection
+ * client.createCollection("my_docs", List.of(
+ *     Map.of("name", "embedding", "type", "vector",
+ *            "params", Map.of("dimension", 768, "space_type", "cosine", "precision", "int8")),
+ *     Map.of("name", "keywords", "type", "sparse", "sparse_model", "default")
+ * ));
  *
- * // Get an index and perform operations
- * Index index = client.getIndex("my_index");
+ * // Get a collection
+ * Collection collection = client.getCollection("my_docs");
  * }</pre>
  */
 public class Endee {
   private static final Logger logger = LoggerFactory.getLogger(Endee.class);
   private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
-  private static final int MAX_DIMENSION = 8000;
-  private static final int MIN_DIMENSION = 2;
-  private static final List<String> VALID_SPARSE_MODELS = List.of("default", "endee_bm25");
+  private static final Set<String> VALID_DB_TYPES =
+      Set.of("starter", "pro", "scale", "enterprise");
+  private static final Set<String> VALID_TOKEN_TYPES = Set.of("rw", "r");
 
   private String token;
   private String baseUrl;
-  private final int version;
   private final HttpClient httpClient;
   private final ObjectMapper objectMapper;
 
-  /**
-   * Creates a new Endee client without authentication. Uses local server at
-   * http://127.0.0.1:8080/api/v1
-   */
+  /** Creates a new Endee client without authentication. Uses local server. */
   public Endee() {
     this(null);
   }
@@ -63,19 +57,18 @@ public class Endee {
   /**
    * Creates a new Endee client.
    *
-   * @param token the Auth token (optional). Format: {@code "account:password"} or {@code
-   *     "account:password:region"}
+   * @param token the auth token. Format: {@code "db_name:secret"} or {@code
+   *     "db_name:secret:region"}
    */
   public Endee(String token) {
     this.token = token;
-    this.baseUrl = "http://127.0.0.1:8080/api/v1";
-    this.version = 1;
+    this.baseUrl = "http://127.0.0.1:8080/api/v2";
     this.objectMapper = new ObjectMapper();
 
     if (token != null && !token.isEmpty()) {
       String[] tokenParts = token.split(":");
       if (tokenParts.length > 2) {
-        this.baseUrl = "https://" + tokenParts[2] + ".endee.io/api/v1";
+        this.baseUrl = "https://" + tokenParts[2] + ".endee.io/api/v2";
         this.token = tokenParts[0] + ":" + tokenParts[1];
       }
     }
@@ -87,220 +80,455 @@ public class Endee {
             .build();
   }
 
-  /**
-   * Sets a custom base URL for the API.
-   *
-   * @param url the base URL
-   * @return the URL that was set
-   */
-  public String setBaseUrl(String url) {
+  /** Sets a custom base URL for the API. */
+  public void setBaseUrl(String url) {
     this.baseUrl = url;
-    return url;
+  }
+
+  /** Sets the authentication token. */
+  public void setToken(String token) {
+    this.token = token;
+  }
+
+  // ── Collection API ──────────────────────────────────────────────────────────
+
+  /**
+   * Creates a new collection with typed fields.
+   *
+   * @param name collection name
+   * @param fields list of field definitions as maps
+   * @return server response
+   */
+  public Map<String, Object> createCollection(String name, List<Map<String, Object>> fields) {
+    if (!ValidationUtils.isValidCollectionName(name)) {
+      throw new IllegalArgumentException(
+          "Invalid collection name. Must be alphanumeric with underscores, max 48 chars, no '__' prefix.");
+    }
+    if (fields == null || fields.isEmpty()) {
+      throw new IllegalArgumentException("At least one field is required");
+    }
+
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("name", name);
+    data.put("fields", fields);
+
+    return call("POST", "/collection", data, Set.of(200, 201));
+  }
+
+  /** Lists all collections. */
+  @SuppressWarnings("unchecked")
+  public List<Map<String, Object>> listCollections() {
+    Map<String, Object> result = call("GET", "/collection", null, Set.of(200));
+    Object collections = result.get("collections");
+    return collections instanceof List ? (List<Map<String, Object>>) collections : List.of();
   }
 
   /**
-   * Creates a new index.
+   * Gets a Collection object for performing operations.
    *
-   * @param options the index creation options
-   * @return success message
-   * @throws EndeeException if the operation fails
+   * @param name collection name
+   * @return Collection object
    */
-  public String createIndex(CreateIndexOptions options) {
-    if (!ValidationUtils.isValidIndexName(options.getName())) {
-      throw new IllegalArgumentException(
-          "Invalid index name. Must be alphanumeric with underscores, max 48 characters.");
-    }
-    if (options.getDimension() < MIN_DIMENSION || options.getDimension() > MAX_DIMENSION) {
-      throw new IllegalArgumentException(
-          "Dimension must be between " + MIN_DIMENSION + " and " + MAX_DIMENSION);
-    }
+  public Collection getCollection(String name) {
+    Map<String, Object> metadata = call("GET", "/collection/" + name, null, Set.of(200));
+    return new Collection(name, token, baseUrl, metadata);
+  }
 
-    String normalizedSpaceType = options.getSpaceType().getValue().toLowerCase();
-    if (!List.of("cosine", "l2", "ip").contains(normalizedSpaceType)) {
-      throw new IllegalArgumentException("Invalid space type: " + options.getSpaceType());
-    }
+  /** Deletes a collection and all its data. */
+  public Map<String, Object> deleteCollection(String name) {
+    return call("DELETE", "/collection/" + name, null, Set.of(200));
+  }
 
-    String sparseModel = options.getSparseModel();
-    if (sparseModel != null) {
-      String normalized = sparseModel.toLowerCase();
-      if (!VALID_SPARSE_MODELS.contains(normalized)) {
-        throw new IllegalArgumentException(
-            "Invalid sparseModel. Must be one of: " + VALID_SPARSE_MODELS);
-      }
-      sparseModel = normalized;
-    }
+  // ── Database Admin (root token) ─────────────────────────────────────────────
 
-    Map<String, Object> data = new HashMap<>();
-    data.put("index_name", options.getName());
-    data.put("dim", options.getDimension());
-    data.put("space_type", normalizedSpaceType);
-    data.put("M", options.getM());
-    data.put("ef_con", options.getEfCon());
-    data.put("checksum", -1);
-    data.put("precision", options.getPrecision().getValue());
+  /** Creates a database. Returns the new db token string. */
+  public String createDatabase(String dbName, String dbType) {
+    requireNonEmpty(dbName, "db_name");
+    String dt = dbType != null ? dbType.toLowerCase() : "enterprise";
+    validateIn(dt, VALID_DB_TYPES, "db_type");
+    Map<String, Object> result =
+        call("POST", "/admin/dbs", Map.of("db_name", dbName, "db_type", dt), Set.of(200, 201));
+    return (String) result.get("db_token");
+  }
 
-    if (sparseModel != null) {
-      data.put("sparse_model", sparseModel);
-    }
-    if (options.getVersion() != null) {
-      data.put("version", options.getVersion());
+  /** Creates a database with default type "enterprise". */
+  public String createDatabase(String dbName) {
+    return createDatabase(dbName, "enterprise");
+  }
+
+  /** Lists all databases. */
+  @SuppressWarnings("unchecked")
+  public List<Map<String, Object>> listDatabases() {
+    Map<String, Object> result = call("GET", "/admin/dbs", null, Set.of(200));
+    Object dbs = result.get("dbs");
+    return dbs instanceof List ? (List<Map<String, Object>>) dbs : List.of();
+  }
+
+  /** Gets a single database's info. */
+  public Map<String, Object> getDatabase(String dbName) {
+    requireNonEmpty(dbName, "db_name");
+    return call("GET", "/dbs/" + dbName + "/info", null, Set.of(200));
+  }
+
+  /** Deletes a database and all its data. */
+  public Map<String, Object> deleteDatabase(String dbName) {
+    requireNonEmpty(dbName, "db_name");
+    return call("DELETE", "/admin/dbs/" + dbName, null, Set.of(200));
+  }
+
+  /** Activates a previously deactivated database. */
+  public Map<String, Object> activateDatabase(String dbName) {
+    return call("POST", "/admin/dbs/" + dbName + "/activate", null, Set.of(200));
+  }
+
+  /** Deactivates a database. */
+  public Map<String, Object> deactivateDatabase(String dbName) {
+    return call("POST", "/admin/dbs/" + dbName + "/deactivate", null, Set.of(200));
+  }
+
+  /** Changes a database's tier. */
+  public Map<String, Object> setDatabaseType(String dbName, String dbType) {
+    String dt = dbType.toLowerCase();
+    validateIn(dt, VALID_DB_TYPES, "db_type");
+    return call("PUT", "/admin/dbs/" + dbName + "/type", Map.of("db_type", dt), Set.of(200));
+  }
+
+  // ── Admin collection views ──────────────────────────────────────────────────
+
+  /** Lists collections in a specific database. */
+  @SuppressWarnings("unchecked")
+  public List<Map<String, Object>> listDbCollections(String dbName) {
+    requireNonEmpty(dbName, "db_name");
+    Map<String, Object> result =
+        call("GET", "/admin/dbs/" + dbName + "/collection", null, Set.of(200));
+    Object c = result.get("collections");
+    return c instanceof List ? (List<Map<String, Object>>) c : List.of();
+  }
+
+  /** Lists all collections across all databases. */
+  @SuppressWarnings("unchecked")
+  public List<Map<String, Object>> listAllCollections() {
+    Map<String, Object> result = call("GET", "/admin/collection", null, Set.of(200));
+    Object c = result.get("collections");
+    return c instanceof List ? (List<Map<String, Object>>) c : List.of();
+  }
+
+  /** Deletes a collection inside a specific database. */
+  public Map<String, Object> deleteDbCollection(String dbName, String collectionName) {
+    requireNonEmpty(dbName, "db_name");
+    requireNonEmpty(collectionName, "collection_name");
+    return call(
+        "DELETE", "/admin/dbs/" + dbName + "/collection/" + collectionName, null, Set.of(200));
+  }
+
+  // ── Token management (admin) ────────────────────────────────────────────────
+
+  /** Creates a token for a database. Returns the new db token string. */
+  public String createToken(String dbName, String name, String tokenType) {
+    requireNonEmpty(dbName, "db_name");
+    requireNonEmpty(name, "name");
+    String tt = tokenType != null ? tokenType.toLowerCase() : "rw";
+    validateIn(tt, VALID_TOKEN_TYPES, "token_type");
+    Map<String, Object> result =
+        call(
+            "POST",
+            "/admin/dbs/" + dbName + "/tokens",
+            Map.of("name", name, "token_type", tt),
+            Set.of(200, 201));
+    return (String) result.get("db_token");
+  }
+
+  /** Creates a read-write token. */
+  public String createToken(String dbName, String name) {
+    return createToken(dbName, name, "rw");
+  }
+
+  /** Lists a database's tokens. */
+  @SuppressWarnings("unchecked")
+  public List<Map<String, Object>> listTokens(String dbName) {
+    requireNonEmpty(dbName, "db_name");
+    Map<String, Object> result =
+        call("GET", "/admin/dbs/" + dbName + "/tokens", null, Set.of(200));
+    Object t = result.get("tokens");
+    return t instanceof List ? (List<Map<String, Object>>) t : List.of();
+  }
+
+  /** Deletes a database token by name. */
+  public Map<String, Object> deleteToken(String dbName, String name) {
+    requireNonEmpty(dbName, "db_name");
+    requireNonEmpty(name, "name");
+    return call("DELETE", "/admin/dbs/" + dbName + "/tokens/" + name, null, Set.of(200));
+  }
+
+  // ── Self-service token management ───────────────────────────────────────────
+
+  /** Creates a token for your own database. Returns the new db token string. */
+  public String createMyToken(String name, String tokenType) {
+    requireNonEmpty(name, "name");
+    String tt = tokenType != null ? tokenType.toLowerCase() : "rw";
+    validateIn(tt, VALID_TOKEN_TYPES, "token_type");
+    Map<String, Object> result =
+        call("POST", "/tokens", Map.of("name", name, "token_type", tt), Set.of(200, 201));
+    return (String) result.get("db_token");
+  }
+
+  /** Creates a read-write token for your own database. */
+  public String createMyToken(String name) {
+    return createMyToken(name, "rw");
+  }
+
+  /** Lists your own database's tokens. */
+  @SuppressWarnings("unchecked")
+  public List<Map<String, Object>> listMyTokens() {
+    Map<String, Object> result = call("GET", "/tokens", null, Set.of(200));
+    Object t = result.get("tokens");
+    return t instanceof List ? (List<Map<String, Object>>) t : List.of();
+  }
+
+  /** Deletes one of your own database's tokens by name. */
+  public Map<String, Object> deleteMyToken(String name) {
+    requireNonEmpty(name, "name");
+    return call("DELETE", "/tokens/" + name, null, Set.of(200));
+  }
+
+  // ── Server info ─────────────────────────────────────────────────────────────
+
+  /** Server health check. Returns {status, timestamp}. */
+  public Map<String, Object> health() {
+    return call("GET", "/health", null, Set.of(200));
+  }
+
+  /** Server stats. Returns {version, uptime, total_requests}. */
+  public Map<String, Object> stats() {
+    return call("GET", "/stats", null, Set.of(200));
+  }
+
+  // ── Backups ─────────────────────────────────────────────────────────────────
+
+  /** Lists this database's backups. */
+  public Object listBackups() {
+    return call("GET", "/backup", null, Set.of(200));
+  }
+
+  /** Gets metadata for one backup. */
+  public Map<String, Object> backupInfo(String backupName) {
+    requireNonEmpty(backupName, "backup_name");
+    return call("GET", "/backup/" + backupName + "/info", null, Set.of(200));
+  }
+
+  /** Gets the in-progress backup status. */
+  public Map<String, Object> activeBackup() {
+    return call("GET", "/backup/active", null, Set.of(200));
+  }
+
+  /** Restores a backup into a new collection. */
+  public Map<String, Object> restoreBackup(String backupName, String targetCollectionName) {
+    requireNonEmpty(backupName, "backup_name");
+    requireNonEmpty(targetCollectionName, "target_collection_name");
+    return call(
+        "POST",
+        "/backup/" + backupName + "/restore",
+        Map.of("target_collection_name", targetCollectionName),
+        Set.of(200, 201));
+  }
+
+  /** Deletes a backup. */
+  public Map<String, Object> deleteBackup(String backupName) {
+    requireNonEmpty(backupName, "backup_name");
+    return call("DELETE", "/backup/" + backupName, null, Set.of(200, 204));
+  }
+
+  /**
+   * Downloads a backup as a .tar file.
+   *
+   * @param backupName name of the backup
+   * @param destPath local file path to write the .tar to
+   * @param dbName optional database name (for root-token multi-db targeting)
+   * @return the destination path
+   */
+  public String downloadBackup(String backupName, String destPath, String dbName) {
+    requireNonEmpty(backupName, "backup_name");
+    requireNonEmpty(destPath, "dest_path");
+
+    StringBuilder url = new StringBuilder(baseUrl)
+        .append("/backup/")
+        .append(backupName)
+        .append("/download?token=")
+        .append(URLEncoder.encode(token != null ? token : "", StandardCharsets.UTF_8));
+    if (dbName != null && !dbName.isEmpty()) {
+      url.append("&db=").append(URLEncoder.encode(dbName, StandardCharsets.UTF_8));
     }
 
     try {
-      HttpRequest request = buildPostRequest("/index/create", data);
+      HttpRequest request = HttpRequest.newBuilder()
+          .uri(URI.create(url.toString()))
+          .timeout(DEFAULT_TIMEOUT)
+          .GET()
+          .build();
+      HttpResponse<byte[]> response =
+          httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+      if (response.statusCode() != 200) {
+        EndeeApiException.raiseException(response.statusCode(), new String(response.body()));
+      }
+      Files.write(Path.of(destPath), response.body());
+      return destPath;
+    } catch (EndeeException e) {
+      throw e;
+    } catch (IOException | InterruptedException e) {
+      if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+      throw new EndeeException("Download backup failed", e);
+    }
+  }
+
+  /** Downloads a backup (no db_name). */
+  public String downloadBackup(String backupName, String destPath) {
+    return downloadBackup(backupName, destPath, null);
+  }
+
+  /**
+   * Uploads a backup .tar file via multipart.
+   *
+   * @param filePath path to a .tar backup file
+   * @return server response
+   */
+  @SuppressWarnings("unchecked")
+  public Map<String, Object> uploadBackup(String filePath) {
+    requireNonEmpty(filePath, "file_path");
+    Path path = Path.of(filePath);
+    String fileName = path.getFileName().toString();
+    if (!fileName.endsWith(".tar")) {
+      throw new IllegalArgumentException("backup file must be a .tar");
+    }
+
+    try {
+      byte[] fileBytes = Files.readAllBytes(path);
+      String boundary = "----EndeeBackupBoundary" + System.nanoTime();
+
+      byte[] multipartBody = buildMultipartBody(boundary, "backup", fileName, fileBytes);
+
+      HttpRequest.Builder builder = HttpRequest.newBuilder()
+          .uri(URI.create(baseUrl + "/backup/upload"))
+          .timeout(DEFAULT_TIMEOUT)
+          .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+          .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody));
+
+      if (token != null && !token.isEmpty()) {
+        builder.header("Authorization", token);
+      }
+
+      HttpResponse<String> response =
+          httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200 && response.statusCode() != 201) {
+        EndeeApiException.raiseException(response.statusCode(), response.body());
+      }
+
+      String body = response.body();
+      if (body == null || body.isBlank()) return Map.of();
+      try {
+        return objectMapper.readValue(body, Map.class);
+      } catch (Exception e) {
+        return Map.of("message", body);
+      }
+    } catch (EndeeException e) {
+      throw e;
+    } catch (IOException | InterruptedException e) {
+      if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+      throw new EndeeException("Upload backup failed", e);
+    }
+  }
+
+  private static byte[] buildMultipartBody(
+      String boundary, String fieldName, String fileName, byte[] fileBytes) throws IOException {
+    String CRLF = "\r\n";
+    var baos = new java.io.ByteArrayOutputStream();
+    baos.write(("--" + boundary + CRLF).getBytes(StandardCharsets.UTF_8));
+    baos.write(("Content-Disposition: form-data; name=\"" + fieldName + "\"; filename=\""
+        + fileName + "\"" + CRLF).getBytes(StandardCharsets.UTF_8));
+    baos.write(("Content-Type: application/x-tar" + CRLF).getBytes(StandardCharsets.UTF_8));
+    baos.write(CRLF.getBytes(StandardCharsets.UTF_8));
+    baos.write(fileBytes);
+    baos.write((CRLF + "--" + boundary + "--" + CRLF).getBytes(StandardCharsets.UTF_8));
+    return baos.toByteArray();
+  }
+
+  // ── Internal HTTP helpers ───────────────────────────────────────────────────
+
+  @SuppressWarnings("unchecked")
+  private Map<String, Object> call(
+      String method, String path, Map<String, Object> json, Set<Integer> okStatuses) {
+    try {
+      HttpRequest request = buildRequest(method, path, json);
       HttpResponse<String> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-      if (response.statusCode() != 200) {
+      if (!okStatuses.contains(response.statusCode())) {
         logger.error("Error: {}", response.body());
         EndeeApiException.raiseException(response.statusCode(), response.body());
       }
 
-      return "Index created successfully";
+      String body = response.body();
+      if (body == null || body.isBlank()) {
+        return Map.of();
+      }
+      return objectMapper.readValue(body, Map.class);
+    } catch (EndeeException e) {
+      throw e;
     } catch (IOException | InterruptedException e) {
       if (e instanceof InterruptedException) {
         Thread.currentThread().interrupt();
       }
-      throw new EndeeException("Failed to create index", e);
+      throw new EndeeException("Request failed: " + method + " " + path, e);
     }
   }
 
-  /**
-   * Lists all indexes.
-   *
-   * @return raw JSON string of index information
-   * @throws EndeeException if the operation fails
-   */
-  public String listIndexes() {
-    try {
-      HttpRequest request = buildGetRequest("/index/list");
-      HttpResponse<String> response =
-          httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-      return response.body();
-    } catch (IOException | InterruptedException e) {
-      if (e instanceof InterruptedException) {
-        Thread.currentThread().interrupt();
-      }
-      throw new EndeeException("Failed to list indexes", e);
-    }
-  }
-
-  /**
-   * Deletes an index.
-   *
-   * @param name the index name to delete
-   * @return success message
-   * @throws EndeeException if the operation fails
-   */
-  public String deleteIndex(String name) {
-    try {
-      HttpRequest request = buildDeleteRequest("/index/" + name + "/delete");
-      HttpResponse<String> response =
-          httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-      if (response.statusCode() != 200) {
-        logger.error("Error: {}", response.body());
-        EndeeApiException.raiseException(response.statusCode(), response.body());
-      }
-
-      return "Index " + name + " deleted successfully";
-    } catch (IOException | InterruptedException e) {
-      if (e instanceof InterruptedException) {
-        Thread.currentThread().interrupt();
-      }
-      throw new EndeeException("Failed to delete index", e);
-    }
-  }
-
-  /**
-   * Gets an index by name.
-   *
-   * @param name the index name
-   * @return the Index object for performing vector operations
-   * @throws EndeeException if the operation fails
-   */
-  public Index getIndex(String name) {
-    try {
-      HttpRequest request = buildGetRequest("/index/" + name + "/info");
-      HttpResponse<String> response =
-          httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-      if (response.statusCode() != 200) {
-        EndeeApiException.raiseException(response.statusCode(), response.body());
-      }
-
-      JsonNode data = objectMapper.readTree(response.body());
-
-      IndexInfo indexInfo = new IndexInfo();
-      indexInfo.setSpaceType(SpaceType.fromValue(data.get("space_type").asText()));
-      indexInfo.setDimension(data.get("dimension").asInt());
-      indexInfo.setTotalElements(data.get("total_elements").asLong());
-      indexInfo.setPrecision(Precision.fromValue(data.get("precision").asText()));
-      indexInfo.setM(data.get("M").asInt());
-      indexInfo.setEfCon(data.get("ef_con").asInt());
-
-      if (data.has("checksum") && !data.get("checksum").isNull()) {
-        indexInfo.setChecksum(data.get("checksum").asLong());
-      }
-      if (data.has("version") && !data.get("version").isNull()) {
-        indexInfo.setVersion(data.get("version").asInt());
-      }
-      if (data.has("sparse_model") && !data.get("sparse_model").isNull()) {
-        indexInfo.setSparseModel(data.get("sparse_model").asText());
-      }
-      if (data.has("lib_token") && !data.get("lib_token").isNull()) {
-        indexInfo.setLibToken(data.get("lib_token").asText());
-      }
-
-      return new Index(name, token, baseUrl, version, indexInfo);
-    } catch (IOException | InterruptedException e) {
-      if (e instanceof InterruptedException) {
-        Thread.currentThread().interrupt();
-      }
-      throw new EndeeException("Failed to get index", e);
-    }
-  }
-
-  private HttpRequest buildGetRequest(String path) {
+  private HttpRequest buildRequest(String method, String path, Map<String, Object> json) {
     HttpRequest.Builder builder =
         HttpRequest.newBuilder()
             .uri(URI.create(baseUrl + path))
-            .header("Content-Type", "application/json")
-            .timeout(DEFAULT_TIMEOUT)
-            .GET();
+            .timeout(DEFAULT_TIMEOUT);
 
     if (token != null && !token.isEmpty()) {
       builder.header("Authorization", token);
+    }
+
+    if (json != null) {
+      String jsonBody;
+      try {
+        jsonBody = objectMapper.writeValueAsString(json);
+      } catch (Exception e) {
+        throw new EndeeException("Failed to serialize request body", e);
+      }
+      builder.header("Content-Type", "application/json");
+      builder.method(method, HttpRequest.BodyPublishers.ofString(jsonBody));
+    } else {
+      switch (method) {
+        case "GET" -> builder.GET();
+        case "DELETE" -> builder.DELETE();
+        case "POST" ->
+            builder
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.noBody());
+        case "PUT" ->
+            builder
+                .header("Content-Type", "application/json")
+                .PUT(HttpRequest.BodyPublishers.noBody());
+        default -> builder.method(method, HttpRequest.BodyPublishers.noBody());
+      }
     }
 
     return builder.build();
   }
 
-  private HttpRequest buildPostRequest(String path, Map<String, Object> data) {
-    String json = JsonUtils.toJson(data);
-    HttpRequest.Builder builder =
-        HttpRequest.newBuilder()
-            .uri(URI.create(baseUrl + path))
-            .header("Content-Type", "application/json")
-            .timeout(DEFAULT_TIMEOUT)
-            .POST(HttpRequest.BodyPublishers.ofString(json));
-
-    if (token != null && !token.isEmpty()) {
-      builder.header("Authorization", token);
+  private static void requireNonEmpty(String value, String name) {
+    if (value == null || value.isEmpty()) {
+      throw new IllegalArgumentException(name + " is required");
     }
-
-    return builder.build();
   }
 
-  private HttpRequest buildDeleteRequest(String path) {
-    HttpRequest.Builder builder =
-        HttpRequest.newBuilder().uri(URI.create(baseUrl + path)).timeout(DEFAULT_TIMEOUT).DELETE();
-
-    if (token != null && !token.isEmpty()) {
-      builder.header("Authorization", token);
+  private static void validateIn(String value, Set<String> valid, String name) {
+    if (!valid.contains(value)) {
+      throw new IllegalArgumentException(name + " must be one of " + valid);
     }
-
-    return builder.build();
   }
 }

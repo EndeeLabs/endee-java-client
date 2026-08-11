@@ -8,30 +8,36 @@ import java.util.regex.Pattern;
 /** Validation utilities. */
 public final class ValidationUtils {
 
-  private static final Pattern INDEX_NAME_PATTERN = Pattern.compile("^[a-zA-Z0-9_]+$");
-  private static final int MAX_INDEX_NAME_LENGTH = 48;
+  private static final Pattern COLLECTION_NAME_PATTERN = Pattern.compile("^[a-zA-Z0-9_]+$");
+  private static final int MAX_COLLECTION_NAME_LENGTH = 48;
 
   private ValidationUtils() {}
 
-  /** Validates an index name. Must be alphanumeric with underscores, less than 48 characters. */
-  public static boolean isValidIndexName(String name) {
+  /**
+   * Validates a collection name. Must be alphanumeric with underscores, max 48 characters, and must
+   * not start with "__".
+   */
+  public static boolean isValidCollectionName(String name) {
     if (name == null || name.isEmpty()) {
       return false;
     }
-    if (name.length() > MAX_INDEX_NAME_LENGTH) {
+    if (name.length() > MAX_COLLECTION_NAME_LENGTH) {
       return false;
     }
-    return INDEX_NAME_PATTERN.matcher(name).matches();
+    if (name.startsWith("__")) {
+      return false;
+    }
+    return COLLECTION_NAME_PATTERN.matcher(name).matches();
   }
 
-  /** Validates that all vector IDs are non-empty and unique. */
-  public static void validateVectorIds(List<String> ids) {
+  /** Validates that all object IDs are non-empty and unique. */
+  public static void validateObjectIds(List<String> ids) {
     Set<String> seenIds = new HashSet<>();
     Set<String> duplicateIds = new HashSet<>();
 
     for (String id : ids) {
       if (id == null || id.isEmpty()) {
-        throw new IllegalArgumentException("All vectors must have a non-empty ID");
+        throw new IllegalArgumentException("All objects must have a non-empty ID");
       }
       if (seenIds.contains(id)) {
         duplicateIds.add(id);
