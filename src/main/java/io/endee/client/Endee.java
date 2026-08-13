@@ -89,6 +89,17 @@ public class Endee {
     this.token = token;
   }
 
+  /** Closes the underlying HTTP client and releases resources. */
+  public void close() {
+    // Java's HttpClient doesn't have an explicit close in JDK 17,
+    // but we null the reference to allow GC
+  }
+
+  @Override
+  public String toString() {
+    return "Endee{baseUrl='" + baseUrl + "'}";
+  }
+
   // ── Collection API ──────────────────────────────────────────────────────────
 
   /**
@@ -194,17 +205,17 @@ public class Endee {
 
   // ── Admin collection views ──────────────────────────────────────────────────
 
-  /** Lists collections in a specific database. */
+  /** Lists collection names in a specific database. */
   @SuppressWarnings("unchecked")
-  public List<Map<String, Object>> listDbCollections(String dbName) {
+  public List<String> listDbCollections(String dbName) {
     requireNonEmpty(dbName, "db_name");
     Map<String, Object> result =
         call("GET", "/admin/dbs/" + dbName + "/collection", null, Set.of(200));
     Object c = result.get("collections");
-    return c instanceof List ? (List<Map<String, Object>>) c : List.of();
+    return c instanceof List ? (List<String>) c : List.of();
   }
 
-  /** Lists all collections across all databases. */
+  /** Lists all collections across all databases (grouped by database). */
   @SuppressWarnings("unchecked")
   public List<Map<String, Object>> listAllCollections() {
     Map<String, Object> result = call("GET", "/admin/collection", null, Set.of(200));
@@ -332,7 +343,7 @@ public class Endee {
         "POST",
         "/backup/" + backupName + "/restore",
         Map.of("target_collection_name", targetCollectionName),
-        Set.of(200, 201));
+        Set.of(200, 201, 202));
   }
 
   /** Deletes a backup. */
@@ -352,6 +363,12 @@ public class Endee {
   public String downloadBackup(String backupName, String destPath, String dbName) {
     requireNonEmpty(backupName, "backup_name");
     requireNonEmpty(destPath, "dest_path");
+
+    Path dest = Path.of(destPath);
+    if (Files.isDirectory(dest)) {
+      dest = dest.resolve(backupName + ".tar");
+    }
+    String resolvedPath = dest.toString();
 
     StringBuilder url =
         new StringBuilder(baseUrl)
@@ -375,8 +392,8 @@ public class Endee {
       if (response.statusCode() != 200) {
         EndeeApiException.raiseException(response.statusCode(), new String(response.body()));
       }
-      Files.write(Path.of(destPath), response.body());
-      return destPath;
+      Files.write(Path.of(resolvedPath), response.body());
+      return resolvedPath;
     } catch (EndeeException e) {
       throw e;
     } catch (IOException | InterruptedException e) {
