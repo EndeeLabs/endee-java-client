@@ -103,6 +103,7 @@ public class Collection {
     for (ObjectItem item : objects) {
       String filterStr = "";
       if (item.getFilter() != null && !item.getFilter().isEmpty()) {
+        ValidationUtils.validateFilter(item.getFilter());
         filterStr = JsonUtils.toJson(item.getFilter());
       }
 
@@ -591,6 +592,9 @@ public class Collection {
 
     List<Map<String, Object>> payload = new ArrayList<>();
     for (UpdateFilterParams update : updates) {
+      if (update.getFilter() != null) {
+        ValidationUtils.validateFilter(update.getFilter());
+      }
       Map<String, Object> entry = new HashMap<>();
       entry.put("id", update.getId());
       entry.put("filter", update.getFilter() != null ? update.getFilter() : Map.of());
