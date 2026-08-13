@@ -85,7 +85,6 @@ Map<String, Object> result = client.createCollection("my_docs", List.of(
         "sparse_model", "default"     // "default" or "endee_bm25"
     )
 ));
-// Output: {message=collection created}
 ```
 
 **Field types:**
@@ -101,18 +100,15 @@ Map<String, Object> result = client.createCollection("my_docs", List.of(
 ```java
 // List all collections
 List<Map<String, Object>> collections = client.listCollections();
-// Output: [{name=my_docs, fields=[...], count=1000}, ...]
 
 // Get a collection reference (for upsert, search, etc.)
 Collection collection = client.getCollection("my_docs");
 
 // Describe a collection (refreshes metadata from server)
 Map<String, Object> desc = collection.describe();
-// Output: {name=my_docs, fields=[{name=embedding, type=vector, params={...}}, ...], count=1000}
 
 // Delete a collection (irreversible)
 client.deleteCollection("my_docs");
-// Output: {message=collection deleted}
 ```
 
 ---
@@ -147,7 +143,6 @@ List<ObjectItem> objects = List.of(
 );
 
 Map<String, Object> result = collection.upsert(objects);
-// Output: {message=2 objects upserted}
 ```
 
 **ObjectItem fields:**
@@ -186,9 +181,6 @@ for (SearchHit hit : results.get("embedding")) {
     System.out.printf("ID: %s  Score: %.4f  Meta: %s  Filter: %s%n",
         hit.getId(), hit.getSimilarity(), hit.getMeta(), hit.getFilter());
 }
-// Output:
-// ID: doc1  Score: 0.9823  Meta: {title=First Document, author=Alice}  Filter: {category=tech, year=2024}
-// ID: doc2  Score: 0.9156  Meta: {title=Second Document, author=Bob}  Filter: {category=science, year=2023}
 ```
 
 ### Filtered Search
@@ -258,10 +250,6 @@ List<SearchHit> fused = Reranker.rerank(
 for (SearchHit hit : fused) {
     System.out.printf("ID: %s  RRF Score: %.6f%n", hit.getId(), hit.getSimilarity());
 }
-// Output:
-// ID: doc1  RRF Score: 0.016393
-// ID: doc2  RRF Score: 0.013115
-// ...
 
 // Convenience: uniform weights, default limit (10) and k (60)
 List<SearchHit> fused = Reranker.rerank(results, Map.of("embedding", 0.5, "keywords", 0.5));
@@ -318,18 +306,27 @@ for (ObjectInfo obj : objects) {
 
 ---
 
+## Get Neighbors
+
+Get the HNSW graph neighbors of an object for a given field:
+
+```java
+Map<String, Object> neighbors = collection.getNeighborsById("doc1", "embedding");
+System.out.println(neighbors);
+```
+
+---
+
 ## Delete Objects
 
 ```java
 // Delete by ID
-Map<String, Object> result = collection.deleteObject("doc1");
-// Output: {message=1 rows deleted}
+collection.deleteObject("doc1");
 
 // Delete by filter
-Map<String, Object> result = collection.deleteByFilter(
+collection.deleteByFilter(
     List.of(Map.of("category", Map.of("$eq", "tech")))
 );
-// Output: {message=5 rows deleted}
 ```
 
 ---
@@ -341,11 +338,10 @@ Update filter fields on existing objects without re-upserting. The entire filter
 ```java
 import io.endee.client.types.UpdateFilterParams;
 
-Map<String, Object> result = collection.updateFilters(List.of(
+collection.updateFilters(List.of(
     new UpdateFilterParams("doc1", Map.of("category", "ml", "year", 2025)),
     new UpdateFilterParams("doc2", Map.of("category", "physics", "year", 2024))
 ));
-// Output: {message=2 filters updated}
 ```
 
 ---
@@ -357,17 +353,14 @@ Map<String, Object> result = collection.updateFilters(List.of(
 Rebuilds HNSW graphs with new parameters. Runs asynchronously — poll `rebuildStatus()` until complete:
 
 ```java
-// Trigger rebuild
-Map<String, Object> result = collection.rebuild(
+collection.rebuild(
     List.of(Map.of("field", "embedding", "M", 20, "ef_con", 200))
 );
-// Output: {message=rebuild started}
 
 // Poll until complete
 while (true) {
     Map<String, Object> status = collection.rebuildStatus();
     System.out.println(status);
-    // Output: {status=in_progress, vectors_processed=500, total_vectors=1000, percent_complete=50}
     if ("completed".equals(status.get("status"))) break;
     Thread.sleep(2000);
 }
@@ -378,8 +371,7 @@ while (true) {
 Defragments the collection's storage after deletions:
 
 ```java
-Map<String, Object> result = collection.shrink();
-// Output: {message=shrink complete}
+collection.shrink();
 ```
 
 ---
@@ -389,14 +381,13 @@ Map<String, Object> result = collection.shrink();
 ### Collection-level Backup
 
 ```java
-// Create a backup (async — poll activeBackup() until done)
-Map<String, Object> result = collection.createBackup("my_backup");
-// Output: {message=backup started}
+// Create a backup (async — poll backupStatus() until done)
+collection.createBackup("my_backup");
 
 // Poll until complete
 while (true) {
-    Map<String, Object> active = client.activeBackup();
-    if (!Boolean.TRUE.equals(active.get("active"))) break;
+    Map<String, Object> status = client.backupStatus();
+    if ("completed".equals(status.get("status")) || "idle".equals(status.get("status"))) break;
     Thread.sleep(2000);
 }
 ```
@@ -410,11 +401,18 @@ Object backups = client.listBackups();
 // Get backup info
 Map<String, Object> info = client.backupInfo("my_backup");
 
-// Active backup status
-Map<String, Object> active = client.activeBackup();
+// Backup status
+Map<String, Object> status = client.backupStatus();
 
 // Restore a backup into a new collection
-Map<String, Object> result = client.restoreBackup("my_backup", "restored_collection");
+client.restoreBackup("my_backup", "restored_collection");
+
+// Poll restore status until complete
+while (true) {
+    Map<String, Object> restoreStatus = client.restoreStatus();
+    if ("completed".equals(restoreStatus.get("status")) || "idle".equals(restoreStatus.get("status"))) break;
+    Thread.sleep(2000);
+}
 
 // Delete a backup
 client.deleteBackup("my_backup");
@@ -424,15 +422,16 @@ client.deleteBackup("my_backup");
 
 ```java
 // Download a backup as a .tar file
-String path = client.downloadBackup("my_backup", "/tmp/my_backup.tar");
-// Output: "/tmp/my_backup.tar"
+client.downloadBackup("my_backup", "/tmp/my_backup.tar");
 
 // Download with db_name (for root-token multi-database targeting)
 client.downloadBackup("my_backup", "/tmp/my_backup.tar", "my_database");
 
 // Upload a .tar backup file
-Map<String, Object> result = client.uploadBackup("/tmp/my_backup.tar");
-// Output: {message=backup uploaded}
+client.uploadBackup("/tmp/my_backup.tar");
+
+// Upload with a custom backup name
+client.uploadBackup("/tmp/my_backup.tar", "custom_name");
 ```
 
 ---
@@ -442,11 +441,9 @@ Map<String, Object> result = client.uploadBackup("/tmp/my_backup.tar");
 ```java
 // Health check
 Map<String, Object> health = client.health();
-// Output: {status=ok, timestamp=1234567890}
 
 // Server stats
 Map<String, Object> stats = client.stats();
-// Output: {version=2.0.0, uptime=3600, total_requests=15000}
 ```
 
 ---
@@ -461,8 +458,8 @@ Admin operations require a root token.
 Endee admin = new Endee("root_token");
 
 // Create a database (returns the new db token)
-String dbToken = admin.createDatabase("my_db", "enterprise");
 // db_type options: "starter", "pro", "scale", "enterprise"
+String dbToken = admin.createDatabase("my_db", "enterprise");
 
 // List all databases
 List<Map<String, Object>> dbs = admin.listDatabases();
@@ -498,8 +495,8 @@ admin.deleteDbCollection("my_db", "my_collection");
 
 ```java
 // Create a token for a database
-String token = admin.createToken("my_db", "analytics_token", "r");
 // token_type: "rw" (read-write) or "r" (read-only)
+String token = admin.createToken("my_db", "analytics_token", "r");
 
 // List tokens
 List<Map<String, Object>> tokens = admin.listTokens("my_db");
@@ -650,28 +647,32 @@ public class Example {
 
         // 6. Get full objects
         List<ObjectInfo> objects = collection.getObjects(List.of("doc1"));
-        System.out.println("Vectors: " + objects.get(0).getVectors().keySet());
 
-        // 7. Update filters
+        // 7. Get neighbors
+        Map<String, Object> neighbors = collection.getNeighborsById("doc1", "embedding");
+
+        // 8. Update filters
         collection.updateFilters(List.of(
             new UpdateFilterParams("doc1", Map.of("category", "ml", "score", 95))
         ));
 
-        // 8. Rebuild and wait
+        // 9. Rebuild and wait
         collection.rebuild(List.of(Map.of("field", "embedding", "M", 20, "ef_con", 200)));
         while (!"completed".equals(collection.rebuildStatus().get("status"))) {
             Thread.sleep(2000);
         }
 
-        // 9. Backup, download, restore
+        // 10. Backup, download, restore
         collection.createBackup("my_backup");
-        while (Boolean.TRUE.equals(client.activeBackup().get("active"))) {
+        while (true) {
+            Map<String, Object> status = client.backupStatus();
+            if ("completed".equals(status.get("status")) || "idle".equals(status.get("status"))) break;
             Thread.sleep(2000);
         }
         client.downloadBackup("my_backup", "/tmp/my_backup.tar");
         client.restoreBackup("my_backup", "docs_restored");
 
-        // 10. Cleanup
+        // 11. Cleanup
         client.deleteCollection("docs");
         client.deleteCollection("docs_restored");
         client.deleteBackup("my_backup");
@@ -699,12 +700,14 @@ public class Example {
 | `stats()` | `Map` | Server stats |
 | `listBackups()` | `Object` | List backups |
 | `backupInfo(name)` | `Map` | Get backup metadata |
-| `activeBackup()` | `Map` | Get active backup status |
+| `backupStatus()` | `Map` | Get backup status |
+| `restoreStatus()` | `Map` | Get restore status |
 | `restoreBackup(name, target)` | `Map` | Restore backup to new collection |
 | `deleteBackup(name)` | `Map` | Delete a backup |
 | `downloadBackup(name, destPath)` | `String` | Download backup as .tar |
 | `downloadBackup(name, destPath, dbName)` | `String` | Download backup (multi-db) |
 | `uploadBackup(filePath)` | `Map` | Upload a .tar backup |
+| `uploadBackup(filePath, backupName)` | `Map` | Upload a .tar backup with custom name |
 | `createDatabase(name, type)` | `String` | Create database (admin) |
 | `listDatabases()` | `List<Map>` | List databases (admin) |
 | `getDatabase(name)` | `Map` | Get database info (admin) |
@@ -731,6 +734,7 @@ public class Example {
 | `search(queryFields, filter)` | `Map<String, List<SearchHit>>` | Search with filter |
 | `search(queryFields, filter, efSearch, prefilterThreshold, boostPct)` | `Map<String, List<SearchHit>>` | Search with all options |
 | `getObjects(List<String> ids)` | `List<ObjectInfo>` | Fetch full objects by ID |
+| `getNeighborsById(id, field)` | `Map` | Get HNSW graph neighbors |
 | `deleteObject(String id)` | `Map` | Delete object by ID |
 | `deleteByFilter(List<Map>)` | `Map` | Delete objects matching filter |
 | `updateFilters(List<UpdateFilterParams>)` | `Map` | Update filter fields |
