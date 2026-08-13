@@ -314,9 +314,14 @@ public class Endee {
     return call("GET", "/backup/" + backupName + "/info", null, Set.of(200));
   }
 
-  /** Gets the in-progress backup status. */
-  public Map<String, Object> activeBackup() {
-    return call("GET", "/backup/active", null, Set.of(200));
+  /** Gets the current backup status. */
+  public Map<String, Object> backupStatus() {
+    return call("GET", "/status/backup", null, Set.of(200));
+  }
+
+  /** Gets the current restore status. */
+  public Map<String, Object> restoreStatus() {
+    return call("GET", "/status/restore", null, Set.of(200));
   }
 
   /** Restores a backup into a new collection. */
@@ -386,13 +391,14 @@ public class Endee {
   }
 
   /**
-   * Uploads a backup .tar file via multipart.
+   * Uploads a backup .tar file.
    *
    * @param filePath path to a .tar backup file
+   * @param backupName optional name for the backup (defaults to filename without extension)
    * @return server response
    */
   @SuppressWarnings("unchecked")
-  public Map<String, Object> uploadBackup(String filePath) {
+  public Map<String, Object> uploadBackup(String filePath, String backupName) {
     requireNonEmpty(filePath, "file_path");
     Path path = Path.of(filePath);
     String fileName = path.getFileName().toString();
@@ -400,18 +406,23 @@ public class Endee {
       throw new IllegalArgumentException("backup file must be a .tar");
     }
 
+    String name =
+        (backupName != null && !backupName.isEmpty())
+            ? backupName
+            : fileName.substring(0, fileName.length() - 4);
+
     try {
       byte[] fileBytes = Files.readAllBytes(path);
-      String boundary = "----EndeeBackupBoundary" + System.nanoTime();
 
-      byte[] multipartBody = buildMultipartBody(boundary, "backup", fileName, fileBytes);
+      String url =
+          baseUrl + "/backup/upload?name=" + URLEncoder.encode(name, StandardCharsets.UTF_8);
 
       HttpRequest.Builder builder =
           HttpRequest.newBuilder()
-              .uri(URI.create(baseUrl + "/backup/upload"))
+              .uri(URI.create(url))
               .timeout(DEFAULT_TIMEOUT)
-              .header("Content-Type", "multipart/form-data; boundary=" + boundary)
-              .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody));
+              .header("Content-Type", "application/x-tar")
+              .POST(HttpRequest.BodyPublishers.ofByteArray(fileBytes));
 
       if (token != null && !token.isEmpty()) {
         builder.header("Authorization", token);
@@ -439,24 +450,9 @@ public class Endee {
     }
   }
 
-  private static byte[] buildMultipartBody(
-      String boundary, String fieldName, String fileName, byte[] fileBytes) throws IOException {
-    String CRLF = "\r\n";
-    var baos = new java.io.ByteArrayOutputStream();
-    baos.write(("--" + boundary + CRLF).getBytes(StandardCharsets.UTF_8));
-    baos.write(
-        ("Content-Disposition: form-data; name=\""
-                + fieldName
-                + "\"; filename=\""
-                + fileName
-                + "\""
-                + CRLF)
-            .getBytes(StandardCharsets.UTF_8));
-    baos.write(("Content-Type: application/x-tar" + CRLF).getBytes(StandardCharsets.UTF_8));
-    baos.write(CRLF.getBytes(StandardCharsets.UTF_8));
-    baos.write(fileBytes);
-    baos.write((CRLF + "--" + boundary + "--" + CRLF).getBytes(StandardCharsets.UTF_8));
-    return baos.toByteArray();
+  /** Uploads a backup .tar file (name derived from filename). */
+  public Map<String, Object> uploadBackup(String filePath) {
+    return uploadBackup(filePath, null);
   }
 
   // ── Internal HTTP helpers ───────────────────────────────────────────────────

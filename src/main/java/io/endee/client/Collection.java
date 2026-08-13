@@ -491,6 +491,44 @@ public class Collection {
     }
   }
 
+  // ── get neighbors ────────────────────────────────────────────────────────────
+
+  /**
+   * Gets the HNSW graph neighbors of an object for a given field.
+   *
+   * @param id object ID
+   * @param field field name
+   * @return map with id, field, and links
+   */
+  public Map<String, Object> getNeighborsById(String id, String field) {
+    if (id == null || id.isEmpty()) {
+      throw new IllegalArgumentException("id is required");
+    }
+    if (field == null || field.isEmpty()) {
+      throw new IllegalArgumentException("field is required");
+    }
+
+    try {
+      HttpRequest request =
+          buildGetRequest("/collection/" + name + "/objects/" + id + "/field/" + field + "/links");
+      HttpResponse<String> response =
+          httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200) {
+        EndeeApiException.raiseException(response.statusCode(), response.body());
+      }
+
+      @SuppressWarnings("unchecked")
+      Map<String, Object> result = objectMapper.readValue(response.body(), Map.class);
+      return result;
+    } catch (IOException | InterruptedException e) {
+      if (e instanceof InterruptedException) {
+        Thread.currentThread().interrupt();
+      }
+      throw new EndeeException("Failed to get neighbors", e);
+    }
+  }
+
   // ── delete ──────────────────────────────────────────────────────────────────
 
   /** Deletes a single object by ID. */
@@ -649,10 +687,10 @@ public class Collection {
     }
   }
 
-  /** Returns the current rebuild status. */
+  /** Returns the current rebuild status (database-level). */
   public Map<String, Object> rebuildStatus() {
     try {
-      HttpRequest request = buildGetRequest("/collection/" + name + "/rebuild/status");
+      HttpRequest request = buildGetRequest("/status/rebuild");
       HttpResponse<String> response =
           httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
