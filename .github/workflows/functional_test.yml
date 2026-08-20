@@ -1,0 +1,162 @@
+name: Functional Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      token:
+        description: "Database API token (required)"
+        required: true
+        type: string
+
+      base_url:
+        description: "API base URL - e.g. http://localhost:8080/api/v2. Leave blank to use the client's default (derived from the token's region, or the local server)."
+        required: false
+        default: ""
+        type: string
+
+      root_token:
+        description: "Root token (NDD_ROOT_TOKEN) - optional. When provided, AdminTest is included."
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  functional-test:
+    name: Endee Functional Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Run functional tests
+        env:
+          ENDEE_TOKEN: ${{ inputs.token }}
+          ENDEE_BASE_URL: ${{ inputs.base_url }}
+          NDD_ROOT_TOKEN: ${{ inputs.root_token }}
+        run: |
+          mvn -B test \
+            -Dsurefire.printSummary=true \
+            -DtrimStackTrace=false
+
+      - name: Write job summary
+        if: always()
+        run: |
+          python3 - <<'PYEOF'
+          import glob
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+          from collections import defaultdict
+
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          report_files = sorted(glob.glob("target/surefire-reports/TEST-*.xml"))
+
+          if not summary_file:
+              sys.exit(0)
+
+          def write(content):
+              with open(summary_file, "a") as f:
+                  f.write(content)
+
+          if not report_files:
+              write("## Test Report\n\nNo `target/surefire-reports/TEST-*.xml` found - Maven may not have run any tests.\n")
+              sys.exit(0)
+
+          total = failures = errors = skipped = 0
+          elapsed = 0.0
+          failed_cases = []
+          skipped_cases = []
+
+          try:
+              for path in report_files:
+                  root = ET.parse(path).getroot()
+                  total += int(root.get("tests", 0))
+                  failures += int(root.get("failures", 0))
+                  errors += int(root.get("errors", 0))
+                  skipped += int(root.get("skipped", 0))
+                  elapsed += float(root.get("time", 0))
+
+                  for tc in root.iter("testcase"):
+                      cls = tc.get("classname", "")
+                      name = tc.get("name", "unknown")
+                      for tag in ("failure", "error"):
+                          node = tc.find(tag)
+                          if node is not None:
+                              msg = (node.get("message") or node.text or "").strip().split("\n")[0][:200]
+                              failed_cases.append((cls, name, msg))
+                      skip_node = tc.find("skipped")
+                      if skip_node is not None:
+                          reason = (skip_node.get("message") or "No reason given").strip()
+                          skipped_cases.append((cls, name, reason))
+
+              passed = total - failures - errors - skipped
+              mins, secs = divmod(int(elapsed), 60)
+              duration = f"{mins}m {secs}s" if mins else f"{secs}s"
+
+              lines = [
+                  "## Endee Functional Test Results",
+                  "",
+                  "| Result   | Count |",
+                  "|----------|------:|",
+                  f"| Passed   | {passed} |",
+                  f"| Failed   | {failures} |",
+                  f"| Errors   | {errors} |",
+                  f"| Skipped  | {skipped} |",
+                  f"| **Total** | **{total}** |",
+                  "",
+                  f"**Duration:** {duration}",
+                  "",
+              ]
+
+              if failed_cases:
+                  lines += [
+                      "<details>",
+                      f"<summary>Failed tests ({len(failed_cases)})</summary>",
+                      "",
+                      "| Test | Reason |",
+                      "|------|--------|",
+                  ]
+                  for cls, name, msg in failed_cases:
+                      lines.append(f"| `{cls}#{name}` | {msg} |")
+                  lines += ["", "</details>", ""]
+
+              if skipped_cases:
+                  by_reason = defaultdict(list)
+                  for cls, name, reason in skipped_cases:
+                      by_reason[reason].append(f"`{cls}#{name}`")
+
+                  lines += ["<details>", f"<summary>Skipped tests ({len(skipped_cases)})</summary>", ""]
+                  for reason, names in by_reason.items():
+                      lines.append(f"**Reason:** {reason}")
+                      lines.append("")
+                      for n in names:
+                          lines.append(f"- {n}")
+                      lines.append("")
+                  lines += ["</details>", ""]
+
+              write("\n".join(lines) + "\n")
+              print(f"Summary written: {passed}/{total} passed in {duration}")
+
+          except Exception as exc:
+              print(f"Summary generation failed: {exc}", file=sys.stderr)
+          PYEOF
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endee-functional-test-results
+          path: target/surefire-reports/*.xml
+          retention-days: 3

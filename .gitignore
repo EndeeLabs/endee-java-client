@@ -72,9 +72,6 @@ logs/
 credentials.json
 secrets.json
 
-# ==================== Test Files (Manual Tests) ====================
-src/test/
-
 # ==================== Temporary Files ====================
 *.tmp
 *.temp
